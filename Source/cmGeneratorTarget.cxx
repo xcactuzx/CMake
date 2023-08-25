@@ -28,6 +28,7 @@
 #include "cmComputeLinkInformation.h"
 #include "cmCustomCommandGenerator.h"
 #include "cmEvaluatedTargetProperty.h"
+#include "cmExperimental.h"
 #include "cmFileSet.h"
 #include "cmFileTimes.h"
 #include "cmGeneratedFileStream.h"
@@ -59,8 +60,6 @@
 namespace {
 using LinkInterfaceFor = cmGeneratorTarget::LinkInterfaceFor;
 
-const cmsys::RegularExpression FrameworkRegularExpression(
-  "^(.*/)?([^/]*)\\.framework/(.*)$");
 const std::string kINTERFACE_LINK_LIBRARIES = "INTERFACE_LINK_LIBRARIES";
 const std::string kINTERFACE_LINK_LIBRARIES_DIRECT =
   "INTERFACE_LINK_LIBRARIES_DIRECT";
@@ -191,7 +190,7 @@ public:
     }
 
     static std::string filesStr;
-    filesStr = cmJoin(files, ";");
+    filesStr = cmList::to_string(files);
     return filesStr;
   }
 
@@ -323,8 +322,7 @@ cmValue cmGeneratorTarget::GetSourcesProperty() const
     values.push_back(se->GetInput());
   }
   static std::string value;
-  value.clear();
-  value = cmJoin(values, ";");
+  value = cmList::to_string(values);
   return cmValue(value);
 }
 
@@ -794,6 +792,15 @@ void handleSystemIncludesDep(cmLocalGenerator* lg,
     result.append(cmGeneratorExpression::Evaluate(
       *dirs, lg, config, headTarget, dagChecker, depTgt, language));
   }
+
+  if (depTgt->Target->IsFrameworkOnApple()) {
+    if (auto fwDescriptor = depTgt->GetGlobalGenerator()->SplitFrameworkPath(
+          depTgt->GetLocation(config),
+          cmGlobalGenerator::FrameworkFormat::Strict)) {
+      result.push_back(fwDescriptor->Directory);
+      result.push_back(fwDescriptor->GetFrameworkPath());
+    }
+  }
 }
 }
 
@@ -1197,12 +1204,11 @@ bool cmGeneratorTarget::IsInBuildSystem() const
     case cmStateEnums::GLOBAL_TARGET:
       return true;
     case cmStateEnums::INTERFACE_LIBRARY:
-      // An INTERFACE library is in the build system if it has SOURCES,
-      // HEADER_SETS, or C++ module filesets.
+      // An INTERFACE library is in the build system if it has SOURCES
+      // or C++ module filesets.
       if (!this->SourceEntries.empty() ||
           !this->Target->GetHeaderSetsEntries().empty() ||
-          !this->Target->GetCxxModuleSetsEntries().empty() ||
-          !this->Target->GetCxxModuleHeaderSetsEntries().empty()) {
+          !this->Target->GetCxxModuleSetsEntries().empty()) {
         return true;
       }
       break;
@@ -1486,9 +1492,9 @@ std::string AddLangSpecificInterfaceIncludeDirectories(
   }
 
   std::string directories;
-  if (const auto* interface = target->GetLinkInterfaceLibraries(
+  if (const auto* link_interface = target->GetLinkInterfaceLibraries(
         config, root, LinkInterfaceFor::Usage)) {
-    for (const cmLinkItem& library : interface->Libraries) {
+    for (const cmLinkItem& library : link_interface->Libraries) {
       if (const cmGeneratorTarget* dependency = library.Target) {
         if (cm::contains(dependency->GetAllConfigCompileLanguages(), lang)) {
           auto* lg = dependency->GetLocalGenerator();
@@ -1638,8 +1644,7 @@ void addFileSetEntry(cmGeneratorTarget const* headTarget,
         }
       }
       if (!found) {
-        if (fileSet->GetType() == "HEADERS"_s ||
-            fileSet->GetType() == "CXX_MODULE_HEADER_UNITS"_s) {
+        if (fileSet->GetType() == "HEADERS"_s) {
           headTarget->Makefile->GetOrCreateSourceGroup("Header Files")
             ->AddGroupFile(path);
         }
@@ -1664,14 +1669,6 @@ void AddFileSetEntries(cmGeneratorTarget const* headTarget,
     for (auto const& name : cmList{ entry.Value }) {
       auto const* cxxModuleSet = headTarget->Target->GetFileSet(name);
       addFileSetEntry(headTarget, config, dagChecker, cxxModuleSet, entries);
-    }
-  }
-  for (auto const& entry :
-       headTarget->Target->GetCxxModuleHeaderSetsEntries()) {
-    for (auto const& name : cmList{ entry.Value }) {
-      auto const* cxxModuleHeaderSet = headTarget->Target->GetFileSet(name);
-      addFileSetEntry(headTarget, config, dagChecker, cxxModuleHeaderSet,
-                      entries);
     }
   }
 }
@@ -2425,11 +2422,10 @@ std::string cmGeneratorTarget::GetSOName(
       }
       // Use the soname given if any.
       if (this->IsFrameworkOnApple()) {
-        cmsys::RegularExpressionMatch match;
-        if (FrameworkRegularExpression.find(info->SOName.c_str(), match)) {
-          auto frameworkName = match.match(2);
-          auto fileName = match.match(3);
-          return cmStrCat(frameworkName, ".framework/", fileName);
+        auto fwDescriptor = this->GetGlobalGenerator()->SplitFrameworkPath(
+          info->SOName, cmGlobalGenerator::FrameworkFormat::Strict);
+        if (fwDescriptor) {
+          return fwDescriptor->GetVersionedName();
         }
       }
       if (cmHasLiteralPrefix(info->SOName, "@rpath/")) {
@@ -3498,7 +3494,7 @@ void cmGeneratorTarget::AddCUDAArchitectureFlags(cmBuildStep compileOrLink,
       if (architecture.virtual_) {
         flags += "compute_" + architecture.name;
 
-        if (architecture.real) {
+        if (ipoEnabled || architecture.real) {
           flags += ",";
         }
       }
@@ -3819,31 +3815,38 @@ std::vector<BT<std::string>> cmGeneratorTarget::GetIncludeDirectories(
   AddInterfaceEntries(this, config, "INTERFACE_INCLUDE_DIRECTORIES", lang,
                       &dagChecker, entries, IncludeRuntimeInterface::Yes);
 
+  processIncludeDirectories(this, entries, includes, uniqueIncludes,
+                            debugIncludes);
+
   if (this->IsApple()) {
     if (cmLinkImplementationLibraries const* impl =
           this->GetLinkImplementationLibraries(config,
                                                LinkInterfaceFor::Usage)) {
       for (cmLinkImplItem const& lib : impl->Libraries) {
-        std::string libDir = cmSystemTools::CollapseFullPath(
-          lib.AsStr(), this->Makefile->GetHomeOutputDirectory());
-
-        static cmsys::RegularExpression frameworkCheck(
-          "(.*\\.framework)(/Versions/[^/]+)?/[^/]+$");
-        if (!frameworkCheck.find(libDir)) {
+        std::string libDir;
+        if (lib.Target == nullptr) {
+          libDir = cmSystemTools::CollapseFullPath(
+            lib.AsStr(), this->Makefile->GetHomeOutputDirectory());
+        } else if (lib.Target->Target->IsFrameworkOnApple() ||
+                   this->IsImportedFrameworkFolderOnApple(config)) {
+          libDir = lib.Target->GetLocation(config);
+        } else {
           continue;
         }
 
-        libDir = frameworkCheck.match(1);
+        auto fwDescriptor =
+          this->GetGlobalGenerator()->SplitFrameworkPath(libDir);
+        if (!fwDescriptor) {
+          continue;
+        }
 
-        EvaluatedTargetPropertyEntry ee(lib, cmListFileBacktrace());
-        ee.Values.emplace_back(std::move(libDir));
-        entries.Entries.emplace_back(std::move(ee));
+        auto fwInclude = fwDescriptor->GetFrameworkPath();
+        if (uniqueIncludes.insert(fwInclude).second) {
+          includes.emplace_back(fwInclude, cmListFileBacktrace());
+        }
       }
     }
   }
-
-  processIncludeDirectories(this, entries, includes, uniqueIncludes,
-                            debugIncludes);
 
   this->IncludeDirectoriesCache.emplace(cacheKey, includes);
   return includes;
@@ -7021,13 +7024,10 @@ std::string cmGeneratorTarget::GetDirectory(
   if (this->IsImported()) {
     auto fullPath = this->Target->ImportedGetFullPath(config, artifact);
     if (this->IsFrameworkOnApple()) {
-      cmsys::RegularExpressionMatch match;
-      if (FrameworkRegularExpression.find(fullPath.c_str(), match)) {
-        auto path = match.match(1);
-        if (!path.empty()) {
-          path.erase(path.length() - 1);
-        }
-        return path;
+      auto fwDescriptor = this->GetGlobalGenerator()->SplitFrameworkPath(
+        fullPath, cmGlobalGenerator::FrameworkFormat::Strict);
+      if (fwDescriptor) {
+        return fwDescriptor->Directory;
       }
     }
     // Return the directory from which the target is imported.
@@ -8572,6 +8572,16 @@ bool cmGeneratorTarget::IsFrameworkOnApple() const
   return this->Target->IsFrameworkOnApple();
 }
 
+bool cmGeneratorTarget::IsImportedFrameworkFolderOnApple(
+  const std::string& config) const
+{
+  return this->IsApple() && this->IsImported() &&
+    (this->GetType() == cmStateEnums::STATIC_LIBRARY ||
+     this->GetType() == cmStateEnums::SHARED_LIBRARY ||
+     this->GetType() == cmStateEnums::UNKNOWN_LIBRARY) &&
+    cmSystemTools::IsPathToFramework(this->GetLocation(config));
+}
+
 bool cmGeneratorTarget::IsAppBundleOnApple() const
 {
   return this->Target->IsAppBundleOnApple();
@@ -8796,6 +8806,10 @@ std::string cmGeneratorTarget::GenerateHeaderSetVerificationFile(
   std::string extension;
   std::string language = source.GetOrDetermineLanguage();
 
+  if (source.GetPropertyAsBool("SKIP_LINTING")) {
+    return std::string{};
+  }
+
   if (language.empty()) {
     if (!languages) {
       languages.emplace();
@@ -8885,8 +8899,7 @@ bool cmGeneratorTarget::HaveCxx20ModuleSources() const
                        }
 
                        auto const& fs_type = file_set->GetType();
-                       return fs_type == "CXX_MODULES"_s ||
-                         fs_type == "CXX_MODULE_HEADER_UNITS"_s;
+                       return fs_type == "CXX_MODULES"_s;
                      });
 }
 
@@ -8909,7 +8922,8 @@ cmGeneratorTarget::Cxx20SupportLevel cmGeneratorTarget::HaveCxxModuleSupport(
   // Else, an empty CMAKE_CXX_STANDARD_DEFAULT means CMake does not detect and
   // set a default standard level for this compiler, so assume all standards
   // are available.
-  if (!this->Makefile->IsOn("CMAKE_EXPERIMENTAL_CXX_MODULE_DYNDEP")) {
+  if (!cmExperimental::HasSupportEnabled(
+        *this->Makefile, cmExperimental::Feature::CxxModuleCMakeApi)) {
     return Cxx20SupportLevel::MissingExperimentalFlag;
   }
   return Cxx20SupportLevel::Supported;
@@ -8989,9 +9003,7 @@ bool cmGeneratorTarget::NeedDyndepForSource(std::string const& lang,
     return false;
   }
   auto const* fs = this->GetFileSetForSource(config, sf);
-  if (fs &&
-      (fs->GetType() == "CXX_MODULES"_s ||
-       fs->GetType() == "CXX_MODULE_HEADER_UNITS"_s)) {
+  if (fs && fs->GetType() == "CXX_MODULES"_s) {
     return true;
   }
   auto const sfProp = sf->GetProperty("CXX_SCAN_FOR_MODULES");

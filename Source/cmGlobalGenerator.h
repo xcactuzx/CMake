@@ -19,7 +19,7 @@
 #include <cmext/algorithm>
 #include <cmext/string_view>
 
-#include "cm_codecvt.hxx"
+#include "cm_codecvt_Encoding.hxx"
 
 #include "cmBuildOptions.h"
 #include "cmCustomCommandLines.h"
@@ -85,6 +85,7 @@ struct GeneratedMakeCommand
   }
 
   std::string Printable() const { return cmJoin(this->PrimaryCommand, " "); }
+  std::string QuotedPrintable() const;
 
   std::vector<std::string> PrimaryCommand;
   bool RequiresOutputForward = false;
@@ -119,10 +120,7 @@ public:
   }
 
   /** Get encoding used by generator for makefile files */
-  virtual codecvt::Encoding GetMakefileEncoding() const
-  {
-    return codecvt::None;
-  }
+  virtual codecvt_Encoding GetMakefileEncoding() const;
 
 #if !defined(CMAKE_BOOTSTRAP)
   /** Get a JSON object describing the generator.  */
@@ -233,7 +231,7 @@ public:
   int Build(
     int jobs, const std::string& srcdir, const std::string& bindir,
     const std::string& projectName,
-    std::vector<std::string> const& targetNames, std::string& output,
+    std::vector<std::string> const& targetNames, std::ostream& ostr,
     const std::string& makeProgram, const std::string& config,
     const cmBuildOptions& buildOptions, bool verbose, cmDuration timeout,
     cmSystemTools::OutputOption outputflag = cmSystemTools::OUTPUT_NONE,
@@ -384,9 +382,17 @@ public:
       , Name(std::move(name))
     {
     }
-    FrameworkDescriptor(std::string directory, std::string name,
-                        std::string suffix)
+    FrameworkDescriptor(std::string directory, std::string version,
+                        std::string name)
       : Directory(std::move(directory))
+      , Version(std::move(version))
+      , Name(std::move(name))
+    {
+    }
+    FrameworkDescriptor(std::string directory, std::string version,
+                        std::string name, std::string suffix)
+      : Directory(std::move(directory))
+      , Version(std::move(version))
       , Name(std::move(name))
       , Suffix(std::move(suffix))
     {
@@ -400,6 +406,13 @@ public:
     {
       return cmStrCat(this->Name, ".framework/"_s, this->Name, this->Suffix);
     }
+    std::string GetVersionedName() const
+    {
+      return this->Version.empty()
+        ? this->GetFullName()
+        : cmStrCat(this->Name, ".framework/Versions/"_s, this->Version, '/',
+                   this->Name, this->Suffix);
+    }
     std::string GetFrameworkPath() const
     {
       return this->Directory.empty()
@@ -412,8 +425,15 @@ public:
         ? this->GetFullName()
         : cmStrCat(this->Directory, '/', this->GetFullName());
     }
+    std::string GetVersionedPath() const
+    {
+      return this->Directory.empty()
+        ? this->GetVersionedName()
+        : cmStrCat(this->Directory, '/', this->GetVersionedName());
+    }
 
     const std::string Directory;
+    const std::string Version;
     const std::string Name;
     const std::string Suffix;
   };
@@ -617,6 +637,8 @@ public:
   };
   StripCommandStyle GetStripCommandStyle(std::string const& strip);
 
+  virtual std::string& EncodeLiteral(std::string& lit) { return lit; }
+
 protected:
   // for a project collect all its targets by following depend
   // information, and also collect all the targets
@@ -637,8 +659,6 @@ protected:
   virtual bool ComputeTargetDepends();
 
   virtual bool CheckALLOW_DUPLICATE_CUSTOM_TARGETS() const;
-
-  void CxxModuleSupportCheck() const;
 
   bool AddHeaderSetVerification();
 
@@ -751,8 +771,6 @@ private:
 #ifdef __APPLE__
   std::map<std::string, StripCommandStyle> StripCommandStyleMap;
 #endif
-
-  mutable bool DiagnosedCxxModuleSupport = false;
 
   // Deferral id generation.
   size_t NextDeferId = 0;

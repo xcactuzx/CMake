@@ -16,7 +16,7 @@
 
 #include <cm/optional>
 
-#include "cm_codecvt.hxx"
+#include "cm_codecvt_Encoding.hxx"
 
 #include "cmBuildOptions.h"
 #include "cmGeneratedFileStream.h"
@@ -77,8 +77,8 @@ public:
   static void WriteDivider(std::ostream& os);
 
   static std::string EncodeRuleName(std::string const& name);
-  std::string EncodeLiteral(const std::string& lit);
-  void EncodeLiteralInplace(std::string& lit);
+  std::string& EncodeLiteral(std::string& lit) override;
+  std::string GetEncodedLiteral(const std::string& lit);
   std::string EncodePath(const std::string& path);
 
   std::unique_ptr<cmLinkLineComputer> CreateLinkLineComputer(
@@ -192,7 +192,7 @@ public:
   bool IsNinja() const override { return true; }
 
   /** Get encoding used by generator for ninja files */
-  codecvt::Encoding GetMakefileEncoding() const override;
+  codecvt_Encoding GetMakefileEncoding() const override;
 
   static cmDocumentationEntry GetDocumentation();
 
@@ -590,7 +590,7 @@ private:
   bool NinjaSupportsMetadataOnRegeneration = false;
   bool NinjaSupportsCodePage = false;
 
-  codecvt::Encoding NinjaExpectedEncoding = codecvt::None;
+  codecvt_Encoding NinjaExpectedEncoding = codecvt_Encoding::None;
 
   bool DiagnosedCxxModuleNinjaSupport = false;
 

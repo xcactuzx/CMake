@@ -127,8 +127,6 @@ static unsigned int VSVersionToMajor(
   switch (v) {
     case cmGlobalVisualStudioGenerator::VSVersion::VS9:
       return 9;
-    case cmGlobalVisualStudioGenerator::VSVersion::VS11:
-      return 11;
     case cmGlobalVisualStudioGenerator::VSVersion::VS12:
       return 12;
     case cmGlobalVisualStudioGenerator::VSVersion::VS14:
@@ -149,8 +147,6 @@ static const char* VSVersionToToolset(
   switch (v) {
     case cmGlobalVisualStudioGenerator::VSVersion::VS9:
       return "v90";
-    case cmGlobalVisualStudioGenerator::VSVersion::VS11:
-      return "v110";
     case cmGlobalVisualStudioGenerator::VSVersion::VS12:
       return "v120";
     case cmGlobalVisualStudioGenerator::VSVersion::VS14:
@@ -171,8 +167,6 @@ static std::string VSVersionToMajorString(
   switch (v) {
     case cmGlobalVisualStudioGenerator::VSVersion::VS9:
       return "9";
-    case cmGlobalVisualStudioGenerator::VSVersion::VS11:
-      return "11";
     case cmGlobalVisualStudioGenerator::VSVersion::VS12:
       return "12";
     case cmGlobalVisualStudioGenerator::VSVersion::VS14:
@@ -192,7 +186,6 @@ static const char* VSVersionToAndroidToolset(
 {
   switch (v) {
     case cmGlobalVisualStudioGenerator::VSVersion::VS9:
-    case cmGlobalVisualStudioGenerator::VSVersion::VS11:
     case cmGlobalVisualStudioGenerator::VSVersion::VS12:
       return "";
     case cmGlobalVisualStudioGenerator::VSVersion::VS14:
@@ -493,7 +486,6 @@ bool cmGlobalVisualStudioVersionedGenerator::MatchesGeneratorName(
   std::string genName;
   switch (this->Version) {
     case cmGlobalVisualStudioGenerator::VSVersion::VS9:
-    case cmGlobalVisualStudioGenerator::VSVersion::VS11:
     case cmGlobalVisualStudioGenerator::VSVersion::VS12:
     case cmGlobalVisualStudioGenerator::VSVersion::VS14:
       break;
@@ -739,13 +731,28 @@ bool cmGlobalVisualStudioVersionedGenerator::IsUtf8EncodingSupported() const
           cmSystemTools::VersionCompareGreaterEq(*vsVer, vsVer16_10_P2));
 }
 
+bool cmGlobalVisualStudioVersionedGenerator::IsScanDependenciesSupported()
+  const
+{
+  // Supported from Visual Studio 17.6 Preview 7.
+  if (this->Version > cmGlobalVisualStudioGenerator::VSVersion::VS17) {
+    return true;
+  }
+  if (this->Version < cmGlobalVisualStudioGenerator::VSVersion::VS17) {
+    return false;
+  }
+  static std::string const vsVer17_6_P7 = "17.6.33706.43";
+  cm::optional<std::string> vsVer = this->GetVSInstanceVersion();
+  return (vsVer &&
+          cmSystemTools::VersionCompareGreaterEq(*vsVer, vsVer17_6_P7));
+}
+
 const char*
 cmGlobalVisualStudioVersionedGenerator::GetAndroidApplicationTypeRevision()
   const
 {
   switch (this->Version) {
     case cmGlobalVisualStudioGenerator::VSVersion::VS9:
-    case cmGlobalVisualStudioGenerator::VSVersion::VS11:
     case cmGlobalVisualStudioGenerator::VSVersion::VS12:
       return "";
     case cmGlobalVisualStudioGenerator::VSVersion::VS14:

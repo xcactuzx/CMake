@@ -37,6 +37,13 @@
 #endif
 
 class cmConfigureLog;
+
+#ifdef CMake_ENABLE_DEBUGGER
+namespace cmDebugger {
+class cmDebuggerAdapter;
+}
+#endif
+
 class cmExternalMakefileProjectGeneratorFactory;
 class cmFileAPI;
 class cmFileTimeCache;
@@ -328,20 +335,18 @@ public:
    */
   cmValue GetCacheDefinition(const std::string&) const;
   //! Add an entry into the cache
-  void AddCacheEntry(const std::string& key, const char* value,
-                     const char* helpString, int type)
-  {
-    this->AddCacheEntry(key,
-                        value ? cmValue(std::string(value)) : cmValue(nullptr),
-                        helpString, type);
-  }
   void AddCacheEntry(const std::string& key, const std::string& value,
-                     const char* helpString, int type)
+                     const std::string& helpString, int type)
   {
-    this->AddCacheEntry(key, cmValue(value), helpString, type);
+    this->AddCacheEntry(key, cmValue{ value }, cmValue{ helpString }, type);
   }
   void AddCacheEntry(const std::string& key, cmValue value,
-                     const char* helpString, int type);
+                     const std::string& helpString, int type)
+  {
+    this->AddCacheEntry(key, value, cmValue{ helpString }, type);
+  }
+  void AddCacheEntry(const std::string& key, cmValue value, cmValue helpString,
+                     int type);
 
   bool DoWriteGlobVerifyTarget() const;
   std::string const& GetGlobVerifyScript() const;
@@ -404,8 +409,11 @@ public:
   std::vector<cmDocumentationEntry> GetGeneratorsDocumentation();
 
   //! Set/Get a property of this target file
-  void SetProperty(const std::string& prop, const char* value);
   void SetProperty(const std::string& prop, cmValue value);
+  void SetProperty(const std::string& prop, std::nullptr_t)
+  {
+    this->SetProperty(prop, cmValue{ nullptr });
+  }
   void SetProperty(const std::string& prop, const std::string& value)
   {
     this->SetProperty(prop, cmValue(value));
@@ -627,6 +635,10 @@ public:
   void UnwatchUnusedCli(const std::string& var);
   void WatchUnusedCli(const std::string& var);
 
+#if !defined(CMAKE_BOOTSTRAP)
+  cmFileAPI* GetFileAPI() const { return this->FileAPI.get(); }
+#endif
+
   cmState* GetState() const { return this->State.get(); }
   void SetCurrentSnapshot(cmStateSnapshot const& snapshot)
   {
@@ -656,6 +668,23 @@ public:
         this->GetProfilingOutput(), category, name, argsFunc());
     }
     return cm::nullopt;
+  }
+#endif
+
+#ifdef CMake_ENABLE_DEBUGGER
+  bool GetDebuggerOn() const { return this->DebuggerOn; }
+  std::string GetDebuggerPipe() const { return this->DebuggerPipe; }
+  std::string GetDebuggerDapLogFile() const
+  {
+    return this->DebuggerDapLogFile;
+  }
+  void SetDebuggerOn(bool b) { this->DebuggerOn = b; }
+  bool StartDebuggerIfEnabled();
+  void StopDebuggerIfNeeded(int exitCode);
+  std::shared_ptr<cmDebugger::cmDebuggerAdapter> GetDebugAdapter()
+    const noexcept
+  {
+    return this->DebugAdapter;
   }
 #endif
 
@@ -797,6 +826,13 @@ private:
 
 #if !defined(CMAKE_BOOTSTRAP)
   std::unique_ptr<cmMakefileProfilingData> ProfilingOutput;
+#endif
+
+#ifdef CMake_ENABLE_DEBUGGER
+  std::shared_ptr<cmDebugger::cmDebuggerAdapter> DebugAdapter;
+  bool DebuggerOn = false;
+  std::string DebuggerPipe;
+  std::string DebuggerDapLogFile;
 #endif
 
 public:

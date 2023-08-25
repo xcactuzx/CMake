@@ -793,6 +793,7 @@ void cmVisualStudio10TargetGenerator::WriteClassicMsBuildProjectFile(
     Elem(e0, "PropertyGroup").Attribute("Label", "UserMacros");
     this->WriteWinRTPackageCertificateKeyFile(e0);
     this->WritePathAndIncrementalLinkOptions(e0);
+    this->WritePublicProjectContentOptions(e0);
     this->WriteCEDebugProjectConfigurationValues(e0);
     this->WriteItemDefinitionGroups(e0);
     this->WriteCustomCommands(e0);
@@ -2533,18 +2534,6 @@ void cmVisualStudio10TargetGenerator::WriteAllSources(Elem& e0)
         break;
       case cmGeneratorTarget::SourceKindExternalObject:
         tool = "Object";
-        if (this->LocalGenerator->GetVersion() <
-            cmGlobalVisualStudioGenerator::VSVersion::VS11) {
-          // For VS == 10 we cannot use LinkObjects to avoid linking custom
-          // command outputs.  If an object file is generated in this target,
-          // then vs10 will use it in the build, and we have to list it as
-          // None instead of Object.
-          std::vector<cmSourceFile*> const* d =
-            this->GeneratorTarget->GetSourceDepends(si.Source);
-          if (d && !d->empty()) {
-            tool = "None";
-          }
-        }
         break;
       case cmGeneratorTarget::SourceKindExtra:
         this->WriteExtraSource(e1, si.Source, toolSettings);
@@ -2777,6 +2766,8 @@ void cmVisualStudio10TargetGenerator::OutputSourceSpecificFlags(
     }
   }
 
+  bool isCppModule = false;
+
   for (std::string const& config : this->Configurations) {
     this->GeneratorTarget->NeedCxxModuleSupport(lang, config);
 
@@ -2797,12 +2788,18 @@ void cmVisualStudio10TargetGenerator::OutputSourceSpecificFlags(
     auto const* fs =
       this->GeneratorTarget->GetFileSetForSource(config, source);
     const char* compileAsPerConfig = compileAs;
-    if (fs &&
-        (fs->GetType() == "CXX_MODULES"_s ||
-         fs->GetType() == "CXX_MODULE_HEADER_UNITS"_s)) {
+    if (fs && fs->GetType() == "CXX_MODULES"_s) {
       if (lang == "CXX"_s) {
         if (fs->GetType() == "CXX_MODULES"_s) {
-          compileAsPerConfig = "CompileAsCppModule";
+          isCppModule = true;
+          if (shouldScanForModules &&
+              this->GlobalGenerator->IsScanDependenciesSupported()) {
+            // ScanSourceforModuleDependencies uses 'cl /scanDependencies' and
+            // can distinguish module interface units and internal partitions.
+            compileAsPerConfig = "CompileAsCpp";
+          } else {
+            compileAsPerConfig = "CompileAsCppModule";
+          }
         } else {
           compileAsPerConfig = "CompileAsHeaderUnit";
         }
@@ -2953,6 +2950,14 @@ void cmVisualStudio10TargetGenerator::OutputSourceSpecificFlags(
       oh.OutputPreprocessorDefinitions(lang);
     }
   }
+
+  if (isCppModule && !objectName.empty()) {
+    std::string baseName = cmStrCat("$(IntDir)/", objectName);
+    cmStripSuffixIfExists(baseName, ".obj");
+    e2.Element("ModuleOutputFile", cmStrCat(baseName, ".ifc"));
+    e2.Element("ModuleDependenciesFile", cmStrCat(baseName, ".module.json"));
+  }
+
   if (this->IsXamlSource(source->GetFullPath())) {
     const std::string& fileName = source->GetFullPath();
     e2.Element("DependentUpon",
@@ -3106,6 +3111,29 @@ void cmVisualStudio10TargetGenerator::WritePathAndIncrementalLinkOptions(
         e1.WritePlatformConfigTag("LocalDebuggerCommandArguments", cond,
                                   genCommandArguments);
       }
+    }
+  }
+}
+
+void cmVisualStudio10TargetGenerator::WritePublicProjectContentOptions(
+  Elem& e0)
+{
+  cmStateEnums::TargetType ttype = this->GeneratorTarget->GetType();
+  if (ttype != cmStateEnums::SHARED_LIBRARY) {
+    return;
+  }
+  if (this->ProjectType != VsProjectType::vcxproj) {
+    return;
+  }
+
+  Elem e1(e0, "PropertyGroup");
+  for (std::string const& config : this->Configurations) {
+    if (this->GeneratorTarget->HaveCxx20ModuleSources() &&
+        this->GeneratorTarget->HaveCxxModuleSupport(config) ==
+          cmGeneratorTarget::Cxx20SupportLevel::Supported) {
+      const std::string cond = this->CalcCondition(config);
+      // For DLL projects, we export all BMIs for now
+      e1.WritePlatformConfigTag("AllProjectBMIsArePublic", cond, "true");
     }
   }
 }

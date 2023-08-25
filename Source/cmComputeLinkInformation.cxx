@@ -1175,7 +1175,14 @@ void cmComputeLinkInformation::AddItem(LinkEntry const& entry)
       LinkEntry libEntry{ entry };
       libEntry.Item = lib;
       this->AddTargetItem(libEntry);
-      this->AddLibraryRuntimeInfo(lib.Value, tgt);
+      if (tgt->IsApple() && tgt->HasImportLibrary(config)) {
+        // Use the library rather than the tbd file for runpath computation
+        this->AddLibraryRuntimeInfo(
+          tgt->GetFullPath(config, cmStateEnums::RuntimeBinaryArtifact, true),
+          tgt);
+      } else {
+        this->AddLibraryRuntimeInfo(lib.Value, tgt);
+      }
       if (tgt && tgt->GetType() == cmStateEnums::SHARED_LIBRARY &&
           this->Target->IsDLLPlatform()) {
         this->AddRuntimeDLL(tgt);
@@ -1261,7 +1268,15 @@ void cmComputeLinkInformation::AddSharedDepItem(LinkEntry const& entry)
       ? cmStateEnums::ImportLibraryArtifact
       : cmStateEnums::RuntimeBinaryArtifact;
     lib = tgt->GetFullPath(this->Config, artifact);
-    this->AddLibraryRuntimeInfo(lib, tgt);
+    if (tgt->IsApple() && tgt->HasImportLibrary(this->Config)) {
+      // Use the library rather than the tbd file for runpath computation
+      this->AddLibraryRuntimeInfo(
+        tgt->GetFullPath(this->Config, cmStateEnums::RuntimeBinaryArtifact,
+                         true),
+        tgt);
+    } else {
+      this->AddLibraryRuntimeInfo(lib, tgt);
+    }
   } else {
     lib = item.Value;
     this->AddLibraryRuntimeInfo(lib);
@@ -1564,7 +1579,9 @@ void cmComputeLinkInformation::AddTargetItem(LinkEntry const& entry)
     this->OldLinkDirItems.push_back(item.Value);
   }
 
-  if (target->IsFrameworkOnApple()) {
+  const bool isImportedFrameworkFolderOnApple =
+    target->IsImportedFrameworkFolderOnApple(this->Config);
+  if (target->IsFrameworkOnApple() || isImportedFrameworkFolderOnApple) {
     // Add the framework directory and the framework item itself
     auto fwDescriptor = this->GlobalGenerator->SplitFrameworkPath(
       item.Value, cmGlobalGenerator::FrameworkFormat::Extended);
@@ -1582,16 +1599,33 @@ void cmComputeLinkInformation::AddTargetItem(LinkEntry const& entry)
     }
 
     if (this->GlobalGenerator->IsXcode()) {
-      this->Items.emplace_back(
-        item, ItemIsPath::Yes, target,
-        this->FindLibraryFeature(entry.Feature == DEFAULT
-                                   ? "__CMAKE_LINK_FRAMEWORK"
-                                   : entry.Feature));
+      if (isImportedFrameworkFolderOnApple) {
+        if (entry.Feature == DEFAULT) {
+          this->AddLibraryFeature("FRAMEWORK");
+          this->Items.emplace_back(item, ItemIsPath::Yes, target,
+                                   this->FindLibraryFeature("FRAMEWORK"));
+        } else {
+          this->Items.emplace_back(item, ItemIsPath::Yes, target,
+                                   this->FindLibraryFeature(entry.Feature));
+        }
+      } else {
+        this->Items.emplace_back(
+          item, ItemIsPath::Yes, target,
+          this->FindLibraryFeature(entry.Feature == DEFAULT
+                                     ? "__CMAKE_LINK_FRAMEWORK"
+                                     : entry.Feature));
+      }
     } else {
       if (cmHasSuffix(entry.Feature, "FRAMEWORK"_s)) {
         this->Items.emplace_back(fwDescriptor->GetLinkName(), ItemIsPath::Yes,
                                  target,
                                  this->FindLibraryFeature(entry.Feature));
+      } else if (entry.Feature == DEFAULT &&
+                 isImportedFrameworkFolderOnApple) {
+        this->AddLibraryFeature("FRAMEWORK");
+        this->Items.emplace_back(fwDescriptor->GetLinkName(), ItemIsPath::Yes,
+                                 target,
+                                 this->FindLibraryFeature("FRAMEWORK"));
       } else {
         this->Items.emplace_back(
           item, ItemIsPath::Yes, target,

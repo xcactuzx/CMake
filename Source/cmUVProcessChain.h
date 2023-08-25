@@ -5,9 +5,9 @@
 #include <array>
 #include <cstddef> // IWYU pragma: keep
 #include <cstdint>
-#include <iosfwd>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <cm3p/uv.h>
@@ -30,7 +30,9 @@ public:
     const std::vector<std::string>& arguments);
   cmUVProcessChainBuilder& SetNoStream(Stream stdio);
   cmUVProcessChainBuilder& SetBuiltinStream(Stream stdio);
+  cmUVProcessChainBuilder& SetMergedBuiltinStreams();
   cmUVProcessChainBuilder& SetExternalStream(Stream stdio, int fd);
+  cmUVProcessChainBuilder& SetWorkingDirectory(std::string dir);
 
   cmUVProcessChain Start() const;
 
@@ -57,15 +59,32 @@ private:
 
   std::array<StdioConfiguration, 3> Stdio;
   std::vector<ProcessConfiguration> Processes;
+  std::string WorkingDirectory;
+  bool MergedBuiltinStreams = false;
 };
 
 class cmUVProcessChain
 {
 public:
+  enum class ExceptionCode
+  {
+    None,
+    Fault,
+    Illegal,
+    Interrupt,
+    Numerical,
+    Spawn,
+    Other,
+  };
+
   struct Status
   {
+    int SpawnResult;
+    bool Finished;
     int64_t ExitStatus;
     int TermSignal;
+
+    std::pair<ExceptionCode, std::string> GetException() const;
   };
 
   cmUVProcessChain(const cmUVProcessChain& other) = delete;
@@ -79,13 +98,14 @@ public:
   uv_loop_t& GetLoop();
 
   // FIXME: Add stdin support
-  std::istream* OutputStream();
-  std::istream* ErrorStream();
+  int OutputStream();
+  int ErrorStream();
 
   bool Valid() const;
   bool Wait(int64_t milliseconds = -1);
   std::vector<const Status*> GetStatus() const;
-  const Status* GetStatus(std::size_t index) const;
+  const Status& GetStatus(std::size_t index) const;
+  bool Finished() const;
 
 private:
   friend class cmUVProcessChainBuilder;

@@ -198,7 +198,7 @@ void cmLocalVisualStudio7Generator::GenerateTarget(cmGeneratorTarget* target)
   // Intel Fortran always uses VS9 format ".vfproj" files.
   cmGlobalVisualStudioGenerator::VSVersion realVersion = gg->GetVersion();
   if (this->FortranProject &&
-      gg->GetVersion() >= cmGlobalVisualStudioGenerator::VSVersion::VS11) {
+      gg->GetVersion() >= cmGlobalVisualStudioGenerator::VSVersion::VS12) {
     gg->SetVersion(cmGlobalVisualStudioGenerator::VSVersion::VS9);
   }
 
@@ -262,6 +262,10 @@ cmSourceFile* cmLocalVisualStudio7Generator::CreateVCProjBuildRule()
   cmCustomCommandLines commandLines =
     cmMakeSingleCommandLine({ cmSystemTools::GetCMakeCommand(), argS, argB,
                               "--check-stamp-file", stampName });
+
+  if (cm->GetIgnoreWarningAsError()) {
+    commandLines[0].emplace_back("--compile-no-warning-as-error");
+  }
   std::string comment = cmStrCat("Building Custom Rule ", makefileIn);
   auto cc = cm::make_unique<cmCustomCommand>();
   cc->SetOutputs(stampName);

@@ -22,6 +22,9 @@
 
 #include "cmValue.h"
 
+template <typename T>
+class BT;
+
 /**
  * CMake lists management
  * A CMake list is a string where list elements are separated by the ';'
@@ -322,7 +325,7 @@ public:
   // extract sublist in range [first, last)
   cmList sublist(const_iterator first, const_iterator last) const
   {
-    return cmList{ first, last };
+    return cmList{ first, last, ExpandElements::No, EmptyElements::Yes };
   }
   // Extract sublist in range [first, last)
   // Throw std::out_of_range if pos is invalid
@@ -936,7 +939,10 @@ public:
                     std::vector<std::string> const& args,
                     std::unique_ptr<TransformSelector> = {});
 
-  std::string join(cm::string_view glue) const;
+  std::string join(cm::string_view glue) const
+  {
+    return cmList::Join(this->Values, glue);
+  }
 
   void swap(cmList& other) noexcept { this->Values.swap(other.Values); }
 
@@ -1092,8 +1098,8 @@ public:
     return cmList::append(list,
                           cm::string_view{ std::accumulate(
                             std::next(first), last, *first,
-                            [](std::string a, const std::string& b) {
-                              return std::move(a) +
+                            [](const std::string& a, const std::string& b) {
+                              return a +
                                 std::string(cmList::element_separator) + b;
                             }) });
   }
@@ -1114,6 +1120,13 @@ public:
                                return std::move(a) +
                                  std::string(cmList::element_separator) + b;
                              }) });
+  }
+
+  template <typename Range,
+            cm::enable_if_t<cm::is_range<Range>::value, int> = 0>
+  static std::string to_string(Range const& r)
+  {
+    return cmList::Join(r, cmList::element_separator);
   }
 
   // Non-members
@@ -1183,6 +1196,27 @@ private:
     }
 
     return container.begin() + delta;
+  }
+
+  static std::string const& ToString(std::string const& s) { return s; }
+  static std::string ToString(cm::string_view s) { return std::string{ s }; }
+  static std::string const& ToString(BT<std::string> const&);
+
+  template <typename Range>
+  static std::string Join(Range const& r, cm::string_view glue)
+  {
+    if (cm::size(r) == 0) {
+      return std::string{};
+    }
+
+    const auto sep = std::string{ glue };
+
+    std::string joined = cmList::ToString(*std::begin(r));
+    for (auto it = std::next(std::begin(r)); it != std::end(r); ++it) {
+      joined += sep + cmList::ToString(*it);
+    }
+
+    return joined;
   }
 
   container_type Values;

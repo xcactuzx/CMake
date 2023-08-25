@@ -160,7 +160,10 @@ endif()
 add_RunCMake_test(CMP0132)
 add_RunCMake_test(CMP0135)
 add_RunCMake_test(CMP0139)
-add_RunCMake_test(CMP0150)
+
+if(GIT_EXECUTABLE)
+  add_RunCMake_test(CMP0150)
+endif()
 
 # The test for Policy 65 requires the use of the
 # CMAKE_SHARED_LIBRARY_LINK_CXX_FLAGS variable, which both the VS and Xcode
@@ -266,6 +269,10 @@ if(CMake_TEST_Qt6 AND Qt6Widgets_FOUND)
     -Dwith_qt_version=6
     "-DQt6_DIR:PATH=${Qt6_DIR}"
     "-DCMAKE_PREFIX_PATH:STRING=${base_dir}"
+    -DPSEUDO_TIDY=$<TARGET_FILE:pseudo_tidy>
+    -DPSEUDO_IWYU=$<TARGET_FILE:pseudo_iwyu>
+    -DPSEUDO_CPPLINT=$<TARGET_FILE:pseudo_cpplint>
+    -DPSEUDO_CPPCHECK=$<TARGET_FILE:pseudo_cppcheck>
   )
   set(want_NoQt_test FALSE)
 endif ()
@@ -290,6 +297,10 @@ if(NOT DEFINED CMake_TEST_BuildDepends_GNU_AS
   if(_gnu_res EQUAL 0 AND _gnu_as)
     set(CMake_TEST_BuildDepends_GNU_AS "${_gnu_as}")
   endif()
+endif()
+
+if(CMAKE_Fortran_COMPILER)
+  list(APPEND BuildDepends_ARGS -DCMake_TEST_Fortran=1)
 endif()
 
 add_RunCMake_test(BuildDepends
@@ -352,7 +363,8 @@ if(CMake_TEST_FindOpenSSL)
 endif()
 if(CMake_TEST_UseSWIG)
   add_RunCMake_test(FindSWIG)
-  add_RunCMake_test(UseSWIG -DCMake_TEST_FindPython=${CMake_TEST_FindPython})
+  add_RunCMake_test(UseSWIG -DCMake_TEST_FindPython2=${CMake_TEST_FindPython2}
+                            -DCMake_TEST_FindPython3=${CMake_TEST_FindPython3})
 endif()
 if(NOT CMAKE_C_COMPILER_ID MATCHES "Watcom")
   add_RunCMake_test(GenerateExportHeader)
@@ -441,7 +453,7 @@ add_RunCMake_test(add_custom_target)
 add_RunCMake_test(add_dependencies)
 add_RunCMake_test(add_executable)
 add_RunCMake_test(add_library)
-add_RunCMake_test(add_subdirectory)
+add_RunCMake_test(add_subdirectory -DCMAKE_Fortran_COMPILER=${CMAKE_Fortran_COMPILER})
 add_RunCMake_test(add_test)
 add_RunCMake_test(build_command)
 add_executable(exit_code exit_code.c)
@@ -668,7 +680,9 @@ endif()
 
 if(XCODE_VERSION)
   add_RunCMake_test(XcodeProject -DXCODE_VERSION=${XCODE_VERSION}
+                                 -DCMAKE_HOST_SYSTEM_PROCESSOR=${CMAKE_HOST_SYSTEM_PROCESSOR}
                                  -DCMake_TEST_Swift=${CMake_TEST_Swift})
+  add_RunCMake_test(XcodeProject-Device -DXCODE_VERSION=${XCODE_VERSION})
   add_RunCMake_test(XcodeProject-Embed -DXCODE_VERSION=${XCODE_VERSION})
 
   # This test can take a very long time due to lots of combinations.
@@ -786,6 +800,7 @@ endif()
 add_RunCMake_test(install -DNO_NAMELINK=${NO_NAMELINK} -DCYGWIN=${CYGWIN} -DMSYS=${MSYS}
   -DCMAKE_SHARED_LIBRARY_RPATH_ORIGIN_TOKEN=${CMAKE_SHARED_LIBRARY_RPATH_ORIGIN_TOKEN}
   -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+  -DCMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}
   -DCMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG=${CMAKE_SHARED_LIBRARY_RUNTIME_C_FLAG}
   -DCMAKE_EXECUTABLE_FORMAT=${CMAKE_EXECUTABLE_FORMAT}
   -DCMake_TEST_ISPC=${CMake_TEST_ISPC}
@@ -854,6 +869,12 @@ add_RunCMake_test(CrosscompilingEmulator
  -DPSEUDO_EMULATOR=$<TARGET_FILE:pseudo_emulator>
  -DPSEUDO_EMULATOR_CUSTOM_COMMAND=$<TARGET_FILE:pseudo_emulator_custom_command>
  -DPSEUDO_EMULATOR_CUSTOM_COMMAND_ARG=$<TARGET_FILE:pseudo_emulator_custom_command_arg>)
+
+add_executable(pseudo_tidy pseudo_tidy.c)
+add_executable(pseudo_iwyu pseudo_iwyu.c)
+add_executable(pseudo_cpplint pseudo_cpplint.c)
+add_executable(pseudo_cppcheck pseudo_cppcheck.c)
+
 if("${CMAKE_GENERATOR}" MATCHES "Make|Ninja")
   if(UNIX AND NOT CYGWIN)
     execute_process(COMMAND ldd --help
@@ -864,10 +885,6 @@ if("${CMAKE_GENERATOR}" MATCHES "Make|Ninja")
       add_RunCMake_test(LinkWhatYouUse)
     endif()
   endif()
-  add_executable(pseudo_tidy pseudo_tidy.c)
-  add_executable(pseudo_iwyu pseudo_iwyu.c)
-  add_executable(pseudo_cpplint pseudo_cpplint.c)
-  add_executable(pseudo_cppcheck pseudo_cppcheck.c)
   add_RunCMake_test(ClangTidy -DPSEUDO_TIDY=$<TARGET_FILE:pseudo_tidy>)
   add_RunCMake_test(IncludeWhatYouUse -DPSEUDO_IWYU=$<TARGET_FILE:pseudo_iwyu>)
   add_RunCMake_test(Cpplint -DPSEUDO_CPPLINT=$<TARGET_FILE:pseudo_cpplint>)

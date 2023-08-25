@@ -914,7 +914,7 @@ std::string cmLocalGenerator::GetIncludeFlags(
         cmSystemTools::CollapseFullPath(cmStrCat(i, "/../"));
       if (emitted.insert(frameworkDir).second) {
         if (sysFwSearchFlag && target &&
-            target->IsSystemIncludeDirectory(i, config, lang)) {
+            target->IsSystemIncludeDirectory(frameworkDir, config, lang)) {
           includeFlags << *sysFwSearchFlag;
         } else {
           includeFlags << *fwSearchFlag;
@@ -1201,6 +1201,17 @@ std::vector<BT<std::string>> cmLocalGenerator::GetIncludeDirectoriesImplicit(
       for (size_t i = impDirVecOldSize; i < impDirVec.size(); ++i) {
         cmSystemTools::ConvertToUnixSlashes(impDirVec[i]);
       }
+
+      // The CMAKE_<LANG>_IMPLICIT_INCLUDE_DIRECTORIES are computed using
+      // try_compile in CMAKE_DETERMINE_COMPILER_ABI, but the implicit include
+      // directories are not known during that try_compile.  This can be a
+      // problem when the HIP runtime include path is /usr/include because the
+      // runtime include path is always added to the userDirs and the compiler
+      // includes standard library headers via "__clang_hip_runtime_wrapper.h".
+      if (lang == "HIP" && impDirVec.size() == impDirVecOldSize &&
+          !cm::contains(impDirVec, "/usr/include")) {
+        implicitExclude.emplace("/usr/include");
+      }
     }
 
     // The Platform/UnixPaths module used to hard-code /usr/include for C, CXX,
@@ -1420,11 +1431,14 @@ void cmLocalGenerator::GetDeviceLinkFlags(
   }
 
   this->AddVisibilityPresetFlags(linkFlags, target, "CUDA");
+  this->GetGlobalGenerator()->EncodeLiteral(linkFlags);
 
   std::vector<std::string> linkOpts;
   target->GetLinkOptions(linkOpts, config, "CUDA");
+  this->SetLinkScriptShell(this->GetGlobalGenerator()->GetUseLinkScript());
   // LINK_OPTIONS are escaped.
   this->AppendCompileOptions(linkFlags, linkOpts);
+  this->SetLinkScriptShell(false);
 }
 
 void cmLocalGenerator::GetTargetFlags(
@@ -1490,13 +1504,17 @@ void cmLocalGenerator::GetTargetFlags(
       }
 
       if (!sharedLibFlags.empty()) {
+        this->GetGlobalGenerator()->EncodeLiteral(sharedLibFlags);
         linkFlags.emplace_back(std::move(sharedLibFlags));
       }
 
       std::vector<BT<std::string>> linkOpts =
         target->GetLinkOptions(config, linkLanguage);
+      this->SetLinkScriptShell(this->GetGlobalGenerator()->GetUseLinkScript());
       // LINK_OPTIONS are escaped.
       this->AppendCompileOptions(linkFlags, linkOpts);
+      this->SetLinkScriptShell(false);
+
       if (pcli) {
         this->OutputLinkLibraries(pcli, linkLineComputer, linkLibs,
                                   frameworkPath, linkPath);
@@ -1570,13 +1588,16 @@ void cmLocalGenerator::GetTargetFlags(
       }
 
       if (!exeFlags.empty()) {
+        this->GetGlobalGenerator()->EncodeLiteral(exeFlags);
         linkFlags.emplace_back(std::move(exeFlags));
       }
 
       std::vector<BT<std::string>> linkOpts =
         target->GetLinkOptions(config, linkLanguage);
+      this->SetLinkScriptShell(this->GetGlobalGenerator()->GetUseLinkScript());
       // LINK_OPTIONS are escaped.
       this->AppendCompileOptions(linkFlags, linkOpts);
+      this->SetLinkScriptShell(false);
     } break;
     default:
       break;
@@ -1592,6 +1613,7 @@ void cmLocalGenerator::GetTargetFlags(
                                    config);
 
   if (!extraLinkFlags.empty()) {
+    this->GetGlobalGenerator()->EncodeLiteral(extraLinkFlags);
     linkFlags.emplace_back(std::move(extraLinkFlags));
   }
 }
@@ -1645,9 +1667,9 @@ std::vector<BT<std::string>> cmLocalGenerator::GetTargetCompileFlags(
   return flags;
 }
 
-static std::string GetFrameworkFlags(const std::string& lang,
-                                     const std::string& config,
-                                     cmGeneratorTarget* target)
+std::string cmLocalGenerator::GetFrameworkFlags(std::string const& lang,
+                                                std::string const& config,
+                                                cmGeneratorTarget* target)
 {
   cmLocalGenerator* lg = target->GetLocalGenerator();
   cmMakefile* mf = lg->GetMakefile();
@@ -1656,10 +1678,13 @@ static std::string GetFrameworkFlags(const std::string& lang,
     return std::string();
   }
 
-  std::string fwSearchFlagVar = "CMAKE_" + lang + "_FRAMEWORK_SEARCH_FLAG";
-  cmValue fwSearchFlag = mf->GetDefinition(fwSearchFlagVar);
-  if (!cmNonempty(fwSearchFlag)) {
-    return std::string();
+  cmValue fwSearchFlag =
+    mf->GetDefinition(cmStrCat("CMAKE_", lang, "_FRAMEWORK_SEARCH_FLAG"));
+  cmValue sysFwSearchFlag = mf->GetDefinition(
+    cmStrCat("CMAKE_", lang, "_SYSTEM_FRAMEWORK_SEARCH_FLAG"));
+
+  if (!fwSearchFlag && !sysFwSearchFlag) {
+    return std::string{};
   }
 
   std::set<std::string> emitted;
@@ -1684,7 +1709,12 @@ static std::string GetFrameworkFlags(const std::string& lang,
     std::vector<std::string> const& frameworks = cli->GetFrameworkPaths();
     for (std::string const& framework : frameworks) {
       if (emitted.insert(framework).second) {
-        flags += *fwSearchFlag;
+        if (sysFwSearchFlag &&
+            target->IsSystemIncludeDirectory(framework, config, lang)) {
+          flags += *sysFwSearchFlag;
+        } else {
+          flags += *fwSearchFlag;
+        }
         flags +=
           lg->ConvertToOutputFormat(framework, cmOutputConverter::SHELL);
         flags += " ";
@@ -1692,13 +1722,6 @@ static std::string GetFrameworkFlags(const std::string& lang,
     }
   }
   return flags;
-}
-
-std::string cmLocalGenerator::GetFrameworkFlags(std::string const& l,
-                                                std::string const& config,
-                                                cmGeneratorTarget* target)
-{
-  return ::GetFrameworkFlags(l, config, target);
 }
 
 void cmLocalGenerator::GetTargetDefines(cmGeneratorTarget const* target,
@@ -1788,10 +1811,13 @@ void cmLocalGenerator::OutputLinkLibraries(
     cmStrCat("CMAKE_", cli.GetLinkLanguage(), "_STANDARD_LIBRARIES"));
 
   // Append the framework search path flags.
-  std::string fwSearchFlag = this->Makefile->GetSafeDefinition(
+  cmValue fwSearchFlag = this->Makefile->GetDefinition(
     cmStrCat("CMAKE_", linkLanguage, "_FRAMEWORK_SEARCH_FLAG"));
+  cmValue sysFwSearchFlag = this->Makefile->GetDefinition(
+    cmStrCat("CMAKE_", linkLanguage, "_SYSTEM_FRAMEWORK_SEARCH_FLAG"));
 
-  frameworkPath = linkLineComputer->ComputeFrameworkPath(cli, fwSearchFlag);
+  frameworkPath =
+    linkLineComputer->ComputeFrameworkPath(cli, fwSearchFlag, sysFwSearchFlag);
   linkLineComputer->ComputeLinkPath(cli, libPathFlag, libPathTerminator,
                                     linkPath);
   linkLineComputer->ComputeLinkLibraries(cli, stdLibString, linkLibraries);

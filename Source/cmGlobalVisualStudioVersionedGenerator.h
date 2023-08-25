@@ -44,11 +44,12 @@ public:
 
   bool IsUtf8EncodingSupported() const override;
 
+  bool IsScanDependenciesSupported() const override;
+
   const char* GetAndroidApplicationTypeRevision() const override;
 
   bool CheckCxxModuleSupport() override
   {
-    this->CxxModuleSupportCheck();
     return this->SupportsCxxModuleDyndep();
   }
   bool SupportsCxxModuleDyndep() const override

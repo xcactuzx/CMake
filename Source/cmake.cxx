@@ -38,6 +38,10 @@
 #include "cmCMakePresetsGraph.h"
 #include "cmCommandLineArgument.h"
 #include "cmCommands.h"
+#ifdef CMake_ENABLE_DEBUGGER
+#  include "cmDebuggerAdapter.h"
+#  include "cmDebuggerPipeConnection.h"
+#endif
 #include "cmDocumentation.h"
 #include "cmDocumentationEntry.h"
 #include "cmDuration.h"
@@ -90,7 +94,6 @@
 #    include "cmGlobalBorlandMakefileGenerator.h"
 #    include "cmGlobalJOMMakefileGenerator.h"
 #    include "cmGlobalNMakeMakefileGenerator.h"
-#    include "cmGlobalVisualStudio11Generator.h"
 #    include "cmGlobalVisualStudio12Generator.h"
 #    include "cmGlobalVisualStudio14Generator.h"
 #    include "cmGlobalVisualStudio9Generator.h"
@@ -411,6 +414,11 @@ Json::Value cmake::ReportCapabilitiesJson() const
   obj["fileApi"] = cmFileAPI::ReportCapabilities();
   obj["serverMode"] = false;
   obj["tls"] = static_cast<bool>(curlVersion->features & CURL_VERSION_SSL);
+#  ifdef CMake_ENABLE_DEBUGGER
+  obj["debugger"] = true;
+#  else
+  obj["debugger"] = false;
+#  endif
 
   return obj;
 }
@@ -617,6 +625,13 @@ bool cmake::SetCacheArgs(const std::vector<std::string>& args)
   };
 
   auto ScriptLambda = [&](std::string const& path, cmake* state) -> bool {
+#ifdef CMake_ENABLE_DEBUGGER
+    // Script mode doesn't hit the usual code path in cmake::Run() that starts
+    // the debugger, so start it manually here instead.
+    if (!this->StartDebuggerIfEnabled()) {
+      return false;
+    }
+#endif
     // Register fake project commands that hint misuse in script mode.
     GetProjectCommandsInScriptMode(state->GetState());
     // Documented behavior of CMAKE{,_CURRENT}_{SOURCE,BINARY}_DIR is to be
@@ -1233,7 +1248,52 @@ void cmake::SetArgs(const std::vector<std::string>& args)
                      "CMAKE_COMPILE_WARNING_AS_ERROR variable.\n";
         state->SetIgnoreWarningAsError(true);
         return true;
-      } }
+      } },
+    CommandArgument{ "--debugger", CommandArgument::Values::Zero,
+                     [](std::string const&, cmake* state) -> bool {
+#ifdef CMake_ENABLE_DEBUGGER
+                       std::cout << "Running with debugger on.\n";
+                       state->SetDebuggerOn(true);
+                       return true;
+#else
+                       static_cast<void>(state);
+                       cmSystemTools::Error(
+                         "CMake was not built with support for --debugger");
+                       return false;
+#endif
+                     } },
+    CommandArgument{ "--debugger-pipe",
+                     "No path specified for --debugger-pipe",
+                     CommandArgument::Values::One,
+                     [](std::string const& value, cmake* state) -> bool {
+#ifdef CMake_ENABLE_DEBUGGER
+                       state->DebuggerPipe = value;
+                       return true;
+#else
+                       static_cast<void>(value);
+                       static_cast<void>(state);
+                       cmSystemTools::Error("CMake was not built with support "
+                                            "for --debugger-pipe");
+                       return false;
+#endif
+                     } },
+    CommandArgument{
+      "--debugger-dap-log", "No file specified for --debugger-dap-log",
+      CommandArgument::Values::One,
+      [](std::string const& value, cmake* state) -> bool {
+#ifdef CMake_ENABLE_DEBUGGER
+        std::string path = cmSystemTools::CollapseFullPath(value);
+        cmSystemTools::ConvertToUnixSlashes(path);
+        state->DebuggerDapLogFile = path;
+        return true;
+#else
+        static_cast<void>(value);
+        static_cast<void>(state);
+        cmSystemTools::Error(
+          "CMake was not built with support for --debugger-dap-log");
+        return false;
+#endif
+      } },
   };
 
 #if defined(CMAKE_HAVE_VS_GENERATORS)
@@ -2138,12 +2198,10 @@ int cmake::DoPreConfigureChecks()
     std::string cacheStart =
       cmStrCat(*this->State->GetInitializedCacheValue("CMAKE_HOME_DIRECTORY"),
                "/CMakeLists.txt");
-    std::string currentStart =
-      cmStrCat(this->GetHomeDirectory(), "/CMakeLists.txt");
-    if (!cmSystemTools::SameFile(cacheStart, currentStart)) {
+    if (!cmSystemTools::SameFile(cacheStart, srcList)) {
       std::string message =
-        cmStrCat("The source \"", currentStart,
-                 "\" does not match the source \"", cacheStart,
+        cmStrCat("The source \"", srcList, "\" does not match the source \"",
+                 cacheStart,
                  "\" used to generate cache.  Re-run cmake with a different "
                  "source directory.");
       cmSystemTools::Error(message);
@@ -2207,7 +2265,7 @@ int cmake::HandleDeleteCacheVariables(const std::string& var)
   this->LoadCache();
   // restore the changed compilers
   for (SaveCacheEntry const& i : saved) {
-    this->AddCacheEntry(i.key, i.value, i.help.c_str(), i.type);
+    this->AddCacheEntry(i.key, i.value, i.help, i.type);
   }
   cmSystemTools::Message(warning.str());
   // avoid reconfigure if there were errors
@@ -2371,16 +2429,16 @@ int cmake::ActualConfigure()
   cmValue genName = this->State->GetInitializedCacheValue("CMAKE_GENERATOR");
   if (genName) {
     if (!this->GlobalGenerator->MatchesGeneratorName(*genName)) {
-      std::string message =
-        cmStrCat("Error: generator : ", this->GlobalGenerator->GetName(),
-                 "\nDoes not match the generator used previously: ", *genName,
-                 "\nEither remove the CMakeCache.txt file and CMakeFiles "
-                 "directory or choose a different binary directory.");
+      std::string message = cmStrCat(
+        "Error: generator : ", this->GlobalGenerator->GetName(), '\n',
+        "Does not match the generator used previously: ", *genName, '\n',
+        "Either remove the CMakeCache.txt file and CMakeFiles "
+        "directory or choose a different binary directory.");
       cmSystemTools::Error(message);
       return -2;
     }
   }
-  if (!this->State->GetInitializedCacheValue("CMAKE_GENERATOR")) {
+  if (!genName) {
     this->AddCacheEntry("CMAKE_GENERATOR", this->GlobalGenerator->GetName(),
                         "Name of generator.", cmStateEnums::INTERNAL);
     this->AddCacheEntry(
@@ -2401,11 +2459,11 @@ int cmake::ActualConfigure()
   if (cmValue instance =
         this->State->GetInitializedCacheValue("CMAKE_GENERATOR_INSTANCE")) {
     if (this->GeneratorInstanceSet && this->GeneratorInstance != *instance) {
-      std::string message =
-        cmStrCat("Error: generator instance: ", this->GeneratorInstance,
-                 "\nDoes not match the instance used previously: ", *instance,
-                 "\nEither remove the CMakeCache.txt file and CMakeFiles "
-                 "directory or choose a different binary directory.");
+      std::string message = cmStrCat(
+        "Error: generator instance: ", this->GeneratorInstance, '\n',
+        "Does not match the instance used previously: ", *instance, '\n',
+        "Either remove the CMakeCache.txt file and CMakeFiles "
+        "directory or choose a different binary directory.");
       cmSystemTools::Error(message);
       return -2;
     }
@@ -2420,9 +2478,9 @@ int cmake::ActualConfigure()
     if (this->GeneratorPlatformSet &&
         this->GeneratorPlatform != *platformName) {
       std::string message = cmStrCat(
-        "Error: generator platform: ", this->GeneratorPlatform,
-        "\nDoes not match the platform used previously: ", *platformName,
-        "\nEither remove the CMakeCache.txt file and CMakeFiles "
+        "Error: generator platform: ", this->GeneratorPlatform, '\n',
+        "Does not match the platform used previously: ", *platformName, '\n',
+        "Either remove the CMakeCache.txt file and CMakeFiles "
         "directory or choose a different binary directory.");
       cmSystemTools::Error(message);
       return -2;
@@ -2436,9 +2494,9 @@ int cmake::ActualConfigure()
         this->State->GetInitializedCacheValue("CMAKE_GENERATOR_TOOLSET")) {
     if (this->GeneratorToolsetSet && this->GeneratorToolset != *tsName) {
       std::string message =
-        cmStrCat("Error: generator toolset: ", this->GeneratorToolset,
-                 "\nDoes not match the toolset used previously: ", *tsName,
-                 "\nEither remove the CMakeCache.txt file and CMakeFiles "
+        cmStrCat("Error: generator toolset: ", this->GeneratorToolset, '\n',
+                 "Does not match the toolset used previously: ", *tsName, '\n',
+                 "Either remove the CMakeCache.txt file and CMakeFiles "
                  "directory or choose a different binary directory.");
       cmSystemTools::Error(message);
       return -2;
@@ -2446,6 +2504,18 @@ int cmake::ActualConfigure()
   } else {
     this->AddCacheEntry("CMAKE_GENERATOR_TOOLSET", this->GeneratorToolset,
                         "Name of generator toolset.", cmStateEnums::INTERNAL);
+  }
+
+  if (!this->State->GetInitializedCacheValue(
+        "CMAKE_CROSSCOMPILING_EMULATOR")) {
+    cm::optional<std::string> emulator =
+      cmSystemTools::GetEnvVar("CMAKE_CROSSCOMPILING_EMULATOR");
+    if (emulator && !emulator->empty()) {
+      std::string message =
+        "Emulator to run executables and tests when cross compiling.";
+      this->AddCacheEntry("CMAKE_CROSSCOMPILING_EMULATOR", *emulator, message,
+                          cmStateEnums::STRING);
+    }
   }
 
   // reset any system configuration information, except for when we are
@@ -2546,7 +2616,6 @@ std::unique_ptr<cmGlobalGenerator> cmake::EvaluateDefaultGlobalGenerator()
   static VSVersionedGenerator const vsGenerators[] = {
     { "14.0", "Visual Studio 14 2015" }, //
     { "12.0", "Visual Studio 12 2013" }, //
-    { "11.0", "Visual Studio 11 2012" }, //
     { "9.0", "Visual Studio 9 2008" }
   };
   static const char* const vsEntries[] = {
@@ -2619,6 +2688,52 @@ void cmake::PreLoadCMakeFiles()
     }
   }
 }
+
+#ifdef CMake_ENABLE_DEBUGGER
+
+bool cmake::StartDebuggerIfEnabled()
+{
+  if (!this->GetDebuggerOn()) {
+    return true;
+  }
+
+  if (DebugAdapter == nullptr) {
+    if (this->GetDebuggerPipe().empty()) {
+      std::cerr
+        << "Error: --debugger-pipe must be set when debugging is enabled.\n";
+      return false;
+    }
+
+    try {
+      DebugAdapter = std::make_shared<cmDebugger::cmDebuggerAdapter>(
+        std::make_shared<cmDebugger::cmDebuggerPipeConnection>(
+          this->GetDebuggerPipe()),
+        this->GetDebuggerDapLogFile());
+    } catch (const std::runtime_error& error) {
+      std::cerr << "Error: Failed to create debugger adapter.\n";
+      std::cerr << error.what() << "\n";
+      return false;
+    }
+    Messenger->SetDebuggerAdapter(DebugAdapter);
+  }
+
+  return true;
+}
+
+void cmake::StopDebuggerIfNeeded(int exitCode)
+{
+  if (!this->GetDebuggerOn()) {
+    return;
+  }
+
+  // The debug adapter may have failed to start (e.g. invalid pipe path).
+  if (DebugAdapter != nullptr) {
+    DebugAdapter->ReportExitCode(exitCode);
+    DebugAdapter.reset();
+  }
+}
+
+#endif
 
 // handle a command line invocation
 int cmake::Run(const std::vector<std::string>& args, bool noconfigure)
@@ -2709,6 +2824,12 @@ int cmake::Run(const std::vector<std::string>& args, bool noconfigure)
     return 0;
   }
 
+#ifdef CMake_ENABLE_DEBUGGER
+  if (!this->StartDebuggerIfEnabled()) {
+    return -1;
+  }
+#endif
+
   int ret = this->Configure();
   if (ret) {
 #if defined(CMAKE_HAVE_VS_GENERATORS)
@@ -2777,7 +2898,7 @@ int cmake::Generate()
 }
 
 void cmake::AddCacheEntry(const std::string& key, cmValue value,
-                          const char* helpString, int type)
+                          cmValue helpString, int type)
 {
   this->State->AddCacheEntry(key, value, helpString,
                              static_cast<cmStateEnums::CacheEntryType>(type));
@@ -2879,7 +3000,6 @@ void cmake::AddDefaultGenerators()
     cmGlobalVisualStudioVersionedGenerator::NewFactory15());
   this->Generators.push_back(cmGlobalVisualStudio14Generator::NewFactory());
   this->Generators.push_back(cmGlobalVisualStudio12Generator::NewFactory());
-  this->Generators.push_back(cmGlobalVisualStudio11Generator::NewFactory());
   this->Generators.push_back(cmGlobalVisualStudio9Generator::NewFactory());
   this->Generators.push_back(cmGlobalBorlandMakefileGenerator::NewFactory());
   this->Generators.push_back(cmGlobalNMakeMakefileGenerator::NewFactory());
@@ -3263,10 +3383,6 @@ void cmake::GenerateGraphViz(const std::string& fileName) const
 #endif
 }
 
-void cmake::SetProperty(const std::string& prop, const char* value)
-{
-  this->State->SetGlobalProperty(prop, value);
-}
 void cmake::SetProperty(const std::string& prop, cmValue value)
 {
   this->State->SetGlobalProperty(prop, value);
@@ -3625,7 +3741,6 @@ int cmake::Build(int jobs, std::string dir, std::vector<std::string> targets,
       return 1;
     }
   }
-  std::string output;
   std::string projName;
   cmValue cachedProjectName =
     this->State->GetCacheEntryValue("CMAKE_PROJECT_NAME");
@@ -3699,10 +3814,17 @@ int cmake::Build(int jobs, std::string dir, std::vector<std::string> targets,
   }
 
   this->GlobalGenerator->PrintBuildCommandAdvice(std::cerr, jobs);
-  return this->GlobalGenerator->Build(
-    jobs, "", dir, projName, targets, output, "", config, buildOptions,
+  std::stringstream ostr;
+  // `cmGlobalGenerator::Build` logs metadata about what directory and commands
+  // are being executed to the `output` parameter. If CMake is verbose, print
+  // this out.
+  std::ostream& verbose_ostr = verbose ? std::cout : ostr;
+  int buildresult = this->GlobalGenerator->Build(
+    jobs, "", dir, projName, targets, verbose_ostr, "", config, buildOptions,
     verbose, cmDuration::zero(), cmSystemTools::OUTPUT_PASSTHROUGH,
     nativeOptions);
+
+  return buildresult;
 }
 
 bool cmake::Open(const std::string& dir, bool dryRun)
@@ -3803,7 +3925,7 @@ std::function<int()> cmake::BuildWorkflowStep(
   return [builder]() -> int {
     auto chain = builder.Start();
     chain.Wait();
-    return static_cast<int>(chain.GetStatus().front()->ExitStatus);
+    return static_cast<int>(chain.GetStatus(0).ExitStatus);
   };
 }
 #endif

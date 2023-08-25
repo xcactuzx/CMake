@@ -189,11 +189,6 @@ Properties on Targets
    /prop_tgt/CXX_EXTENSIONS
    /prop_tgt/CXX_MODULE_DIRS
    /prop_tgt/CXX_MODULE_DIRS_NAME
-   /prop_tgt/CXX_MODULE_HEADER_UNIT_DIRS
-   /prop_tgt/CXX_MODULE_HEADER_UNIT_DIRS_NAME
-   /prop_tgt/CXX_MODULE_HEADER_UNIT_SET
-   /prop_tgt/CXX_MODULE_HEADER_UNIT_SET_NAME
-   /prop_tgt/CXX_MODULE_HEADER_UNIT_SETS
    /prop_tgt/CXX_MODULE_SET
    /prop_tgt/CXX_MODULE_SET_NAME
    /prop_tgt/CXX_MODULE_SETS
@@ -279,7 +274,6 @@ Properties on Targets
    /prop_tgt/INTERFACE_COMPILE_DEFINITIONS
    /prop_tgt/INTERFACE_COMPILE_FEATURES
    /prop_tgt/INTERFACE_COMPILE_OPTIONS
-   /prop_tgt/INTERFACE_CXX_MODULE_HEADER_UNIT_SETS
    /prop_tgt/INTERFACE_CXX_MODULE_SETS
    /prop_tgt/INTERFACE_HEADER_SETS
    /prop_tgt/INTERFACE_HEADER_SETS_TO_VERIFY
@@ -522,6 +516,8 @@ Properties on Tests
    /prop_test/SKIP_RETURN_CODE
    /prop_test/TIMEOUT
    /prop_test/TIMEOUT_AFTER_MATCH
+   /prop_test/TIMEOUT_SIGNAL_GRACE_PERIOD
+   /prop_test/TIMEOUT_SIGNAL_NAME
    /prop_test/WILL_FAIL
    /prop_test/WORKING_DIRECTORY
 
@@ -557,6 +553,7 @@ Properties on Source Files
    /prop_sf/SKIP_AUTOMOC
    /prop_sf/SKIP_AUTORCC
    /prop_sf/SKIP_AUTOUIC
+   /prop_sf/SKIP_LINTING
    /prop_sf/SKIP_PRECOMPILE_HEADERS
    /prop_sf/SKIP_UNITY_BUILD_INCLUSION
    /prop_sf/Swift_DEPENDENCIES_FILE

@@ -828,7 +828,8 @@ void cmLocalUnixMakefileGenerator3::WriteSpecialTargetsBottom(
     }
     std::string cmakefileName = "CMakeFiles/Makefile.cmake";
     std::string runRule = cmStrCat(
-      "$(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) "
+      "$(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) ",
+      cm->GetIgnoreWarningAsError() ? "--compile-no-warning-as-error " : "",
       "--check-build-system ",
       this->ConvertToOutputFormat(cmakefileName, cmOutputConverter::SHELL),
       " 0");
@@ -1221,7 +1222,7 @@ void cmLocalUnixMakefileGenerator3::AppendEcho(
         } else {
           // Use cmake to echo the text in color.
           cmd = cmStrCat(
-            "@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) ",
+            "@$(CMAKE_COMMAND) -E cmake_echo_color \"--switch=$(COLOR)\" ",
             color_name);
           if (progress) {
             cmd += "--progress-dir=";
@@ -1805,7 +1806,8 @@ void cmLocalUnixMakefileGenerator3::WriteLocalAllRules(
     std::string cmakefileName = "CMakeFiles/Makefile.cmake";
     {
       std::string runRule = cmStrCat(
-        "$(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) "
+        "$(CMAKE_COMMAND) -S$(CMAKE_SOURCE_DIR) -B$(CMAKE_BINARY_DIR) ",
+        cm->GetIgnoreWarningAsError() ? "--compile-no-warning-as-error " : "",
         "--check-build-system ",
         this->ConvertToOutputFormat(cmakefileName, cmOutputConverter::SHELL),
         " 1");

@@ -608,6 +608,7 @@ Id flags: ${testflags} ${CMAKE_${lang}_COMPILER_ID_FLAGS_ALWAYS}
     if(CMAKE_OSX_SYSROOT)
       set(id_sdkroot "SDKROOT = \"${CMAKE_OSX_SYSROOT}\";")
       if(CMAKE_OSX_SYSROOT MATCHES "(^|/)[Ii][Pp][Hh][Oo][Nn][Ee]" OR
+        CMAKE_OSX_SYSROOT MATCHES "(^|/)[Xx][Rr]" OR
         CMAKE_OSX_SYSROOT MATCHES "(^|/)[Aa][Pp][Pp][Ll][Ee][Tt][Vv]")
         set(id_product_type "com.apple.product-type.bundle.unit-test")
       elseif(CMAKE_OSX_SYSROOT MATCHES "(^|/)[Ww][Aa][Tt][Cc][Hh]")
@@ -1149,7 +1150,7 @@ function(CMAKE_DETERMINE_MSVC_SHOWINCLUDES_PREFIX lang userflags)
     ENCODING AUTO # cl prints in console output code page
     )
   string(REPLACE "\n" "\n  " msg "  ${out}")
-  if(res EQUAL 0 AND "${out}" MATCHES "(^|\n)([^:\n][^:\n]+:[^:\n]*[^: \n][^: \n]:?[ \t]+)([A-Za-z]:\\\\|\\./)")
+  if(res EQUAL 0 AND "${out}" MATCHES "(^|\n)([^:\n][^:\n]+:[^:\n]*[^: \n][^: \n]:?[ \t]+)([A-Za-z]:\\\\|\\./|/)")
     set(CMAKE_${lang}_CL_SHOWINCLUDES_PREFIX "${CMAKE_MATCH_2}" PARENT_SCOPE)
     string(APPEND msg "\nFound prefix \"${CMAKE_MATCH_2}\"")
   else()

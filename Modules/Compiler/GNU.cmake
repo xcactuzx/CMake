@@ -53,7 +53,10 @@ macro(__compiler_gnu lang)
   endif()
 
   # define flags for linker depfile generation
-  if (NOT DEFINED CMAKE_${lang}_LINKER_DEPFILE_SUPPORTED)
+  set(CMAKE_${lang}_LINKER_DEPFILE_FLAGS "LINKER:--dependency-file,<DEP_FILE>")
+  set(CMAKE_${lang}_LINKER_DEPFILE_FORMAT gcc)
+
+  if(NOT DEFINED CMAKE_${lang}_LINKER_DEPFILE_SUPPORTED)
     ## Ensure ninja tool is recent enough...
     if(CMAKE_GENERATOR MATCHES "^Ninja")
       # Ninja 1.10 or upper is required
@@ -71,7 +74,7 @@ macro(__compiler_gnu lang)
 
     if (NOT DEFINED CMAKE_${lang}_LINKER_DEPFILE_SUPPORTED)
       ## check if this feature is supported by the linker
-      execute_process(COMMAND "${CMAKE_LINKER}" --help
+      execute_process(COMMAND "${CMAKE_${lang}_COMPILER}" -Wl,--help
         OUTPUT_VARIABLE _linker_capabilities
         ERROR_VARIABLE _linker_capabilities)
       if(_linker_capabilities MATCHES "--dependency-file")
@@ -83,11 +86,16 @@ macro(__compiler_gnu lang)
     endif()
   endif()
   if (CMAKE_${lang}_LINKER_DEPFILE_SUPPORTED)
-    set(CMAKE_${lang}_LINKER_DEPFILE_FLAGS "LINKER:--dependency-file,<DEP_FILE>")
-    set(CMAKE_${lang}_LINKER_DEPFILE_FORMAT gcc)
     set(CMAKE_${lang}_LINK_DEPENDS_USE_LINKER TRUE)
   else()
     unset(CMAKE_${lang}_LINK_DEPENDS_USE_LINKER)
+  endif()
+
+  # For now, due to GNU binutils ld bug when LTO is enabled (see GNU bug
+    # `30568 <https://sourceware.org/bugzilla/show_bug.cgi?id=30568>`_),
+  # deactivate this feature.
+  if (NOT DEFINED CMAKE_LINK_DEPENDS_USE_LINKER)
+    set(CMAKE_LINK_DEPENDS_USE_LINKER FALSE)
   endif()
 
   # Initial configuration flags.

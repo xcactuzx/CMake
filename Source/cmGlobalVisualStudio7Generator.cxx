@@ -330,23 +330,23 @@ void cmGlobalVisualStudio7Generator::Generate()
     }
   }
 
-  if (this->Version == VSVersion::VS11 &&
+  if (this->Version == VSVersion::VS12 &&
       !this->CMakeInstance->GetIsInTryCompile()) {
-    std::string cmakeWarnVS11;
+    std::string cmakeWarnVS12;
     if (cmValue cached = this->CMakeInstance->GetState()->GetCacheEntryValue(
-          "CMAKE_WARN_VS11")) {
-      this->CMakeInstance->MarkCliAsUsed("CMAKE_WARN_VS11");
-      cmakeWarnVS11 = *cached;
+          "CMAKE_WARN_VS12")) {
+      this->CMakeInstance->MarkCliAsUsed("CMAKE_WARN_VS12");
+      cmakeWarnVS12 = *cached;
     } else {
-      cmSystemTools::GetEnv("CMAKE_WARN_VS11", cmakeWarnVS11);
+      cmSystemTools::GetEnv("CMAKE_WARN_VS12", cmakeWarnVS12);
     }
-    if (cmakeWarnVS11.empty() || !cmIsOff(cmakeWarnVS11)) {
+    if (cmakeWarnVS12.empty() || !cmIsOff(cmakeWarnVS12)) {
       this->CMakeInstance->IssueMessage(
         MessageType::WARNING,
-        "The \"Visual Studio 11 2012\" generator is deprecated "
+        "The \"Visual Studio 12 2013\" generator is deprecated "
         "and will be removed in a future version of CMake."
         "\n"
-        "Add CMAKE_WARN_VS11=OFF to the cache to disable this warning.");
+        "Add CMAKE_WARN_VS12=OFF to the cache to disable this warning.");
     }
   }
 }
@@ -716,7 +716,7 @@ std::set<std::string> cmGlobalVisualStudio7Generator::IsPartOfDefaultBuild(
   cmGeneratorTarget const* target)
 {
   std::set<std::string> activeConfigs;
-  // if it is a utilitiy target then only make it part of the
+  // if it is a utility target then only make it part of the
   // default build if another target depends on it
   int type = target->GetType();
   if (type == cmStateEnums::GLOBAL_TARGET) {

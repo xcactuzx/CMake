@@ -19,6 +19,7 @@
 #include "cmGeneratorExpression.h"
 #include "cmGeneratorTarget.h"
 #include "cmGlobalGenerator.h"
+#include "cmList.h"
 #include "cmLocalGenerator.h"
 #include "cmMakefile.h"
 #include "cmMessageType.h"
@@ -237,7 +238,7 @@ void cmExportBuildFileGenerator::SetImportLocationProperty(
     }
 
     // Store the property.
-    properties[prop] = cmJoin(objects, ";");
+    properties[prop] = cmList::to_string(objects);
   } else {
     // Add the main target file.
     {
@@ -399,8 +400,7 @@ std::string cmExportBuildFileGenerator::GetFileSetDirectories(
     auto const& type = fileSet->GetType();
     // C++ modules do not support interface file sets which are dependent upon
     // the configuration.
-    if (contextSensitive &&
-        (type == "CXX_MODULES"_s || type == "CXX_MODULE_HEADER_UNITS"_s)) {
+    if (contextSensitive && type == "CXX_MODULES"_s) {
       auto* mf = this->LG->GetMakefile();
       std::ostringstream e;
       e << "The \"" << gte->GetName() << "\" target's interface file set \""
@@ -459,8 +459,7 @@ std::string cmExportBuildFileGenerator::GetFileSetFiles(cmGeneratorTarget* gte,
     auto const& type = fileSet->GetType();
     // C++ modules do not support interface file sets which are dependent upon
     // the configuration.
-    if (contextSensitive &&
-        (type == "CXX_MODULES"_s || type == "CXX_MODULE_HEADER_UNITS"_s)) {
+    if (contextSensitive && type == "CXX_MODULES"_s) {
       auto* mf = this->LG->GetMakefile();
       std::ostringstream e;
       e << "The \"" << gte->GetName() << "\" target's interface file set \""
@@ -542,6 +541,12 @@ bool cmExportBuildFileGenerator::GenerateImportCxxModuleConfigTargetInclusion(
   os.SetCopyIfDifferent(true);
 
   for (auto const* tgt : this->ExportedTargets) {
+    // Only targets with C++ module sources will have a
+    // collator-generated install script.
+    if (!tgt->HaveCxx20ModuleSources()) {
+      continue;
+    }
+
     os << "include(\"${CMAKE_CURRENT_LIST_DIR}/target-" << tgt->GetExportName()
        << '-' << config << ".cmake\")\n";
   }

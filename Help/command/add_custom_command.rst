@@ -478,7 +478,7 @@ target is already built, the command will not execute.
                      [BYPRODUCTS [files...]]
                      [WORKING_DIRECTORY dir]
                      [COMMENT comment]
-                     [VERBATIM] [USES_TERMINAL]
+                     [VERBATIM]
                      [COMMAND_EXPAND_LISTS])
 
 This defines a new command that will be associated with building the
@@ -489,9 +489,12 @@ When the command will happen is determined by which
 of the following is specified:
 
 ``PRE_BUILD``
-  On :ref:`Visual Studio Generators`, run before any other rules are
-  executed within the target.
-  On other generators, run just before ``PRE_LINK`` commands.
+  This option has unique behavior for the :ref:`Visual Studio Generators`.
+  When using one of the Visual Studio generators, the command will run before
+  any other rules are executed within the target.  With all other generators,
+  this option behaves the same as ``PRE_LINK`` instead.  Because of this,
+  it is recommended to avoid using ``PRE_BUILD`` except when it is known that
+  a Visual Studio generator is being used.
 ``PRE_LINK``
   Run after sources have been compiled but before linking the binary
   or running the librarian or archiver tool of a static library.
@@ -509,7 +512,7 @@ one of the keywords to make clear the behavior they expect.
   Because generator expressions can be used in custom commands,
   it is possible to define ``COMMAND`` lines or whole custom commands
   which evaluate to empty strings for certain configurations.
-  For **Visual Studio 11 2012 (and newer)** generators these command
+  For **Visual Studio 12 2013 (and newer)** generators these command
   lines or custom commands will be omitted for the specific
   configuration and no "empty-string-command" will be added.
 

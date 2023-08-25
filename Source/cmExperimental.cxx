@@ -27,7 +27,7 @@ struct FeatureData
   bool Warned;
 } LookupTable[] = {
   // CxxModuleCMakeApi
-  { "2182bf5c-ef0d-489a-91da-49dbc3090d2a",
+  { "bf70d4b0-9fb7-465c-9803-34014e70d112",
     "CMAKE_EXPERIMENTAL_CXX_MODULE_CMAKE_API",
     "CMake's C++ module support is experimental. It is meant only for "
     "experimentation and feedback to CMake developers.",

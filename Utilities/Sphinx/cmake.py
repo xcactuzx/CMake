@@ -5,25 +5,29 @@
 
 import os
 import re
-
 from dataclasses import dataclass
 from typing import Any, List, Tuple, Type, cast
 
 import sphinx
 
-from docutils.utils.code_analyzer import Lexer, LexerError
-from docutils.parsers.rst import Directive, directives
-from docutils.transforms import Transform
-from docutils.nodes import Element, Node, TextElement, system_message
-from docutils import io, nodes
+# The following imports may fail if we don't have Sphinx 2.x or later.
+if sphinx.version_info >= (2,):
+    from docutils import io, nodes
+    from docutils.nodes import Element, Node, TextElement, system_message
+    from docutils.parsers.rst import Directive, directives
+    from docutils.transforms import Transform
+    from docutils.utils.code_analyzer import Lexer, LexerError
 
-from sphinx.directives import ObjectDescription, nl_escape_re
-from sphinx.domains import Domain, ObjType
-from sphinx.roles import XRefRole
-from sphinx.util.docutils import ReferenceRole
-from sphinx.util.nodes import make_refnode
-from sphinx.util import logging, ws_re
-from sphinx import addnodes
+    from sphinx import addnodes
+    from sphinx.directives import ObjectDescription, nl_escape_re
+    from sphinx.domains import Domain, ObjType
+    from sphinx.roles import XRefRole
+    from sphinx.util import logging, ws_re
+    from sphinx.util.docutils import ReferenceRole
+    from sphinx.util.nodes import make_refnode
+else:
+    # Sphinx 2.x is required.
+    assert sphinx.version_info >= (2,)
 
 # END imports
 
@@ -42,10 +46,10 @@ from sphinx import addnodes
 # - manual/cmake-buildsystem.7.html
 #     (with nested $<..>; relative and absolute paths, "::")
 
+from pygments.lexer import bygroups  # noqa I100
 from pygments.lexers import CMakeLexer
 from pygments.token import (Comment, Name, Number, Operator, Punctuation,
                             String, Text, Whitespace)
-from pygments.lexer import bygroups
 
 # Notes on regular expressions below:
 # - [\.\+-] are needed for string constants like gtk+-2.0
@@ -109,9 +113,6 @@ CMakeLexer.tokens["root"] = [
 # END pygments tweaks
 
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-# Require at least Sphinx 2.x.
-assert sphinx.version_info >= (2,)
 
 logger = logging.getLogger(__name__)
 
@@ -514,7 +515,7 @@ class CMakeReferenceRole:
         class Class(parent):
             def __call__(self, name: str, rawtext: str, text: str,
                          *args, **kwargs
-                        ) -> Tuple[List[Node], List[system_message]]:
+                         ) -> Tuple[List[Node], List[system_message]]:
                 text = CMakeReferenceRole._escape_angle_brackets(text)
                 return super().__call__(name, rawtext, text, *args, **kwargs)
         return Class
@@ -581,12 +582,23 @@ class CMakeXRefTransform(Transform):
     # after the sphinx (210) and docutils (220) substitutions.
     default_priority = 221
 
+    # This helper supports docutils < 0.18, which is missing 'findall',
+    # and docutils == 0.18.0, which is missing 'traverse'.
+    def _document_findall_as_list(self, condition):
+        if hasattr(self.document, 'findall'):
+            # Fully iterate into a list so the caller can grow 'self.document'
+            # while iterating.
+            return list(self.document.findall(condition))
+
+        # Fallback to 'traverse' on old docutils, which returns a list.
+        return self.document.traverse(condition)
+
     def apply(self):
         env = self.document.settings.env
 
         # Find CMake cross-reference nodes and add index and target
         # nodes for them.
-        for ref in self.document.traverse(addnodes.pending_xref):
+        for ref in self._document_findall_as_list(addnodes.pending_xref):
             if not ref['refdomain'] == 'cmake':
                 continue
 
@@ -667,7 +679,7 @@ class CMakeDomain(Domain):
         'manual':     CMakeXRefRole(),
     }
     initial_data = {
-        'objects': {},  # fullname -> docname, objtype
+        'objects': {},  # fullname -> ObjectEntry
     }
 
     def clear_doc(self, docname):
@@ -677,6 +689,20 @@ class CMakeDomain(Domain):
                 to_clear.add(fullname)
         for fullname in to_clear:
             del self.data['objects'][fullname]
+
+    def merge_domaindata(self, docnames, otherdata):
+        """Merge domaindata from the workers/chunks when they return.
+
+        Called once per parallelization chunk.
+        Only used when sphinx is run in parallel mode.
+
+        :param docnames: a Set of the docnames that are part of the current
+                         chunk to merge
+        :param otherdata: the partial data calculated by the current chunk
+        """
+        for refname, obj in otherdata['objects'].items():
+            if obj.docname in docnames:
+                self.data['objects'][refname] = obj
 
     def resolve_xref(self, env, fromdocname, builder,
                      typ, target, node, contnode):
@@ -711,7 +737,7 @@ class CMakeDomain(Domain):
 
     def get_objects(self):
         for refname, obj in self.data['objects'].items():
-            yield (refname, obj.name, obj.objtype, obj.docname, obj.node_id, 1)
+            yield (refname, refname, obj.objtype, obj.docname, obj.node_id, 1)
 
 
 def setup(app):

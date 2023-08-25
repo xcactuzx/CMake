@@ -181,14 +181,13 @@ std::string cmGlobalNinjaGenerator::EncodeRuleName(std::string const& name)
   return encoded;
 }
 
-std::string cmGlobalNinjaGenerator::EncodeLiteral(const std::string& lit)
+std::string cmGlobalNinjaGenerator::GetEncodedLiteral(const std::string& lit)
 {
   std::string result = lit;
-  EncodeLiteralInplace(result);
-  return result;
+  return this->EncodeLiteral(result);
 }
 
-void cmGlobalNinjaGenerator::EncodeLiteralInplace(std::string& lit)
+std::string& cmGlobalNinjaGenerator::EncodeLiteral(std::string& lit)
 {
   cmSystemTools::ReplaceString(lit, "$", "$$");
   cmSystemTools::ReplaceString(lit, "\n", "$\n");
@@ -196,6 +195,7 @@ void cmGlobalNinjaGenerator::EncodeLiteralInplace(std::string& lit)
     cmSystemTools::ReplaceString(lit, cmStrCat('$', this->GetCMakeCFGIntDir()),
                                  this->GetCMakeCFGIntDir());
   }
+  return lit;
 }
 
 std::string cmGlobalNinjaGenerator::EncodePath(const std::string& path)
@@ -207,7 +207,7 @@ std::string cmGlobalNinjaGenerator::EncodePath(const std::string& path)
   else
     std::replace(result.begin(), result.end(), '/', '\\');
 #endif
-  this->EncodeLiteralInplace(result);
+  this->EncodeLiteral(result);
   cmSystemTools::ReplaceString(result, " ", "$ ");
   cmSystemTools::ReplaceString(result, ":", "$:");
   return result;
@@ -394,7 +394,7 @@ void cmGlobalNinjaGenerator::WriteCustomCommandBuild(
 #endif
       vars["COMMAND"] = std::move(cmd);
     }
-    vars["DESC"] = this->EncodeLiteral(description);
+    vars["DESC"] = this->GetEncodedLiteral(description);
     if (restat) {
       vars["restat"] = "1";
     }
@@ -507,8 +507,18 @@ void cmGlobalNinjaGenerator::WriteVariable(std::ostream& os,
     return;
   }
 
+  std::string val;
+  static std::unordered_set<std::string> const variablesShouldNotBeTrimmed = {
+    "CODE_CHECK", "LAUNCHER"
+  };
+  if (variablesShouldNotBeTrimmed.find(name) ==
+      variablesShouldNotBeTrimmed.end()) {
+    val = cmTrimWhitespace(value);
+  } else {
+    val = value;
+  }
+
   // Do not add a variable if the value is empty.
-  std::string val = cmTrimWhitespace(value);
   if (val.empty()) {
     return;
   }
@@ -556,7 +566,7 @@ std::unique_ptr<cmLocalGenerator> cmGlobalNinjaGenerator::CreateLocalGenerator(
     cm::make_unique<cmLocalNinjaGenerator>(this, mf));
 }
 
-codecvt::Encoding cmGlobalNinjaGenerator::GetMakefileEncoding() const
+codecvt_Encoding cmGlobalNinjaGenerator::GetMakefileEncoding() const
 {
   return this->NinjaExpectedEncoding;
 }
@@ -789,7 +799,7 @@ void cmGlobalNinjaGenerator::CheckNinjaFeatures()
   if (this->NinjaSupportsCodePage) {
     this->CheckNinjaCodePage();
   } else {
-    this->NinjaExpectedEncoding = codecvt::ANSI;
+    this->NinjaExpectedEncoding = codecvt_Encoding::ANSI;
   }
 #endif
 }
@@ -820,9 +830,9 @@ void cmGlobalNinjaGenerator::CheckNinjaCodePage()
           lineView.substr(cmStrLen("Build file encoding: "));
         if (encoding == "UTF-8") {
           // Ninja expects UTF-8. We use that internally. No conversion needed.
-          this->NinjaExpectedEncoding = codecvt::None;
+          this->NinjaExpectedEncoding = codecvt_Encoding::None;
         } else {
-          this->NinjaExpectedEncoding = codecvt::ANSI;
+          this->NinjaExpectedEncoding = codecvt_Encoding::ANSI;
         }
         found = true;
         break;
@@ -832,10 +842,10 @@ void cmGlobalNinjaGenerator::CheckNinjaCodePage()
       this->GetCMakeInstance()->IssueMessage(
         MessageType::WARNING,
         "Could not determine Ninja's code page, defaulting to UTF-8");
-      this->NinjaExpectedEncoding = codecvt::None;
+      this->NinjaExpectedEncoding = codecvt_Encoding::None;
     }
   } else {
-    this->NinjaExpectedEncoding = codecvt::ANSI;
+    this->NinjaExpectedEncoding = codecvt_Encoding::ANSI;
   }
 }
 
@@ -864,7 +874,6 @@ bool cmGlobalNinjaGenerator::CheckLanguages(
 
 bool cmGlobalNinjaGenerator::CheckCxxModuleSupport()
 {
-  this->CxxModuleSupportCheck();
   if (this->NinjaSupportsDyndepsCxx) {
     return true;
   }
@@ -1806,17 +1815,21 @@ void cmGlobalNinjaGenerator::WriteTargetRebuildManifest(std::ostream& os)
   if (this->GlobalSettingIsOn("CMAKE_SUPPRESS_REGENERATION")) {
     return;
   }
+
+  cmake* cm = this->GetCMakeInstance();
   const auto& lg = this->LocalGenerators[0];
 
   {
     cmNinjaRule rule("RERUN_CMAKE");
-    rule.Command =
-      cmStrCat(this->CMakeCmd(), " --regenerate-during-build -S",
-               lg->ConvertToOutputFormat(lg->GetSourceDirectory(),
-                                         cmOutputConverter::SHELL),
-               " -B",
-               lg->ConvertToOutputFormat(lg->GetBinaryDirectory(),
-                                         cmOutputConverter::SHELL));
+    rule.Command = cmStrCat(
+      this->CMakeCmd(), " --regenerate-during-build",
+      cm->GetIgnoreWarningAsError() ? " --compile-no-warning-as-error" : "",
+      " -S",
+      lg->ConvertToOutputFormat(lg->GetSourceDirectory(),
+                                cmOutputConverter::SHELL),
+      " -B",
+      lg->ConvertToOutputFormat(lg->GetBinaryDirectory(),
+                                cmOutputConverter::SHELL));
     rule.Description = "Re-running CMake...";
     rule.Comment = "Rule for re-running cmake.";
     rule.Generator = true;
@@ -1840,7 +1853,6 @@ void cmGlobalNinjaGenerator::WriteTargetRebuildManifest(std::ostream& os)
     reBuild.Variables["pool"] = "console";
   }
 
-  cmake* cm = this->GetCMakeInstance();
   if (this->SupportsManifestRestat() && cm->DoWriteGlobVerifyTarget()) {
     {
       cmNinjaRule rule("VERIFY_GLOBS");
@@ -2226,9 +2238,9 @@ Compilation of source files within a target is split into the following steps:
       depfile = $DEP_FILE
       command = gfortran -cpp $DEFINES $INCLUDES $FLAGS -E $in -o $out &&
                 cmake -E cmake_ninja_depends \
-                  --tdi=FortranDependInfo.json --pp=$out --dep=$DEP_FILE \
-                  --obj=$OBJ_FILE --ddi=$DYNDEP_INTERMEDIATE_FILE \
-                  --lang=Fortran
+                  --tdi=FortranDependInfo.json --lang=Fortran \
+                  --src=$out --out=$out --dep=$DEP_FILE --obj=$OBJ_FILE \
+                  --ddi=$DYNDEP_INTERMEDIATE_FILE
 
     build src.f90-pp.f90 | src.f90.o.ddi: Fortran_PREPROCESS src.f90
       OBJ_FILE = src.f90.o
@@ -2296,14 +2308,15 @@ struct cmSourceInfo
 };
 
 cm::optional<cmSourceInfo> cmcmd_cmake_ninja_depends_fortran(
-  std::string const& arg_tdi, std::string const& arg_pp);
+  std::string const& arg_tdi, std::string const& arg_src);
 }
 
 int cmcmd_cmake_ninja_depends(std::vector<std::string>::const_iterator argBeg,
                               std::vector<std::string>::const_iterator argEnd)
 {
   std::string arg_tdi;
-  std::string arg_pp;
+  std::string arg_src;
+  std::string arg_out;
   std::string arg_dep;
   std::string arg_obj;
   std::string arg_ddi;
@@ -2311,8 +2324,10 @@ int cmcmd_cmake_ninja_depends(std::vector<std::string>::const_iterator argBeg,
   for (std::string const& arg : cmMakeRange(argBeg, argEnd)) {
     if (cmHasLiteralPrefix(arg, "--tdi=")) {
       arg_tdi = arg.substr(6);
-    } else if (cmHasLiteralPrefix(arg, "--pp=")) {
-      arg_pp = arg.substr(5);
+    } else if (cmHasLiteralPrefix(arg, "--src=")) {
+      arg_src = arg.substr(6);
+    } else if (cmHasLiteralPrefix(arg, "--out=")) {
+      arg_out = arg.substr(6);
     } else if (cmHasLiteralPrefix(arg, "--dep=")) {
       arg_dep = arg.substr(6);
     } else if (cmHasLiteralPrefix(arg, "--obj=")) {
@@ -2321,6 +2336,10 @@ int cmcmd_cmake_ninja_depends(std::vector<std::string>::const_iterator argBeg,
       arg_ddi = arg.substr(6);
     } else if (cmHasLiteralPrefix(arg, "--lang=")) {
       arg_lang = arg.substr(7);
+    } else if (cmHasLiteralPrefix(arg, "--pp=")) {
+      // CMake 3.26 and below used '--pp=' instead of '--src=' and '--out='.
+      arg_src = arg.substr(5);
+      arg_out = arg_src;
     } else {
       cmSystemTools::Error(
         cmStrCat("-E cmake_ninja_depends unknown argument: ", arg));
@@ -2331,8 +2350,12 @@ int cmcmd_cmake_ninja_depends(std::vector<std::string>::const_iterator argBeg,
     cmSystemTools::Error("-E cmake_ninja_depends requires value for --tdi=");
     return 1;
   }
-  if (arg_pp.empty()) {
-    cmSystemTools::Error("-E cmake_ninja_depends requires value for --pp=");
+  if (arg_src.empty()) {
+    cmSystemTools::Error("-E cmake_ninja_depends requires value for --src=");
+    return 1;
+  }
+  if (arg_out.empty()) {
+    cmSystemTools::Error("-E cmake_ninja_depends requires value for --out=");
     return 1;
   }
   if (arg_dep.empty()) {
@@ -2354,7 +2377,7 @@ int cmcmd_cmake_ninja_depends(std::vector<std::string>::const_iterator argBeg,
 
   cm::optional<cmSourceInfo> info;
   if (arg_lang == "Fortran") {
-    info = cmcmd_cmake_ninja_depends_fortran(arg_tdi, arg_pp);
+    info = cmcmd_cmake_ninja_depends_fortran(arg_tdi, arg_src);
   } else {
     cmSystemTools::Error(
       cmStrCat("-E cmake_ninja_depends does not understand the ", arg_lang,
@@ -2371,7 +2394,7 @@ int cmcmd_cmake_ninja_depends(std::vector<std::string>::const_iterator argBeg,
 
   {
     cmGeneratedFileStream depfile(arg_dep);
-    depfile << cmSystemTools::ConvertToUnixOutputPath(arg_pp) << ":";
+    depfile << cmSystemTools::ConvertToUnixOutputPath(arg_out) << ":";
     for (std::string const& include : info->Includes) {
       depfile << " \\\n " << cmSystemTools::ConvertToUnixOutputPath(include);
     }
@@ -2389,7 +2412,7 @@ int cmcmd_cmake_ninja_depends(std::vector<std::string>::const_iterator argBeg,
 namespace {
 
 cm::optional<cmSourceInfo> cmcmd_cmake_ninja_depends_fortran(
-  std::string const& arg_tdi, std::string const& arg_pp)
+  std::string const& arg_tdi, std::string const& arg_src)
 {
   cm::optional<cmSourceInfo> info;
   cmFortranCompiler fc;
@@ -2441,9 +2464,9 @@ cm::optional<cmSourceInfo> cmcmd_cmake_ninja_depends_fortran(
   cmFortranSourceInfo finfo;
   std::set<std::string> defines;
   cmFortranParser parser(fc, includes, defines, finfo);
-  if (!cmFortranParser_FilePush(&parser, arg_pp.c_str())) {
+  if (!cmFortranParser_FilePush(&parser, arg_src.c_str())) {
     cmSystemTools::Error(
-      cmStrCat("-E cmake_ninja_depends failed to open ", arg_pp));
+      cmStrCat("-E cmake_ninja_depends failed to open ", arg_src));
     return info;
   }
   if (cmFortran_yyparse(parser.Scanner) != 0) {
@@ -2515,7 +2538,12 @@ bool cmGlobalNinjaGenerator::WriteDyndepFile(
   CxxModuleUsage usages;
 
   // Map from module name to module file path, if known.
-  std::map<std::string, std::string> mod_files;
+  struct AvailableModuleInfo
+  {
+    std::string BmiPath;
+    bool IsPrivate;
+  };
+  std::map<std::string, AvailableModuleInfo> mod_files;
 
   // Populate the module map with those provided by linked targets first.
   for (std::string const& linked_target_dir : linked_target_dirs) {
@@ -2539,7 +2567,15 @@ bool cmGlobalNinjaGenerator::WriteDyndepFile(
       Json::Value const& target_modules = ltm["modules"];
       if (target_modules.isObject()) {
         for (auto i = target_modules.begin(); i != target_modules.end(); ++i) {
-          mod_files[i.key().asString()] = i->asString();
+          Json::Value const& visible_module = *i;
+          if (visible_module.isObject()) {
+            Json::Value const& bmi_path = visible_module["bmi"];
+            Json::Value const& is_private = visible_module["is-private"];
+            mod_files[i.key().asString()] = AvailableModuleInfo{
+              bmi_path.asString(),
+              is_private.asBool(),
+            };
+          }
         }
       }
       Json::Value const& target_modules_references = ltm["references"];
@@ -2620,8 +2656,15 @@ bool cmGlobalNinjaGenerator::WriteDyndepFile(
         cmSystemTools::ReplaceString(safe_logical_name, ":", "-");
         mod = cmStrCat(module_dir, safe_logical_name, module_ext);
       }
-      mod_files[p.LogicalName] = mod;
-      target_modules[p.LogicalName] = mod;
+      mod_files[p.LogicalName] = AvailableModuleInfo{
+        mod,
+        false, // Always visible within our own target.
+      };
+      Json::Value& module_info = target_modules[p.LogicalName] =
+        Json::objectValue;
+      module_info["bmi"] = mod;
+      module_info["is-private"] =
+        cmDyndepCollation::IsObjectPrivate(object.PrimaryOutput, export_info);
     }
   }
 
@@ -2641,12 +2684,15 @@ bool cmGlobalNinjaGenerator::WriteDyndepFile(
       return path;
     };
     locs.BmiLocationForModule =
-      [&mod_files](std::string const& logical) -> cm::optional<std::string> {
+      [&mod_files](std::string const& logical) -> CxxBmiLocation {
       auto m = mod_files.find(logical);
       if (m != mod_files.end()) {
-        return m->second;
+        if (m->second.IsPrivate) {
+          return CxxBmiLocation::Private();
+        }
+        return CxxBmiLocation::Known(m->second.BmiPath);
       }
-      return {};
+      return CxxBmiLocation::Unknown();
     };
 
     // Insert information about the current target's modules.
@@ -2668,13 +2714,14 @@ bool cmGlobalNinjaGenerator::WriteDyndepFile(
       build.ImplicitOuts.clear();
       for (auto const& p : object.Provides) {
         build.ImplicitOuts.push_back(
-          this->ConvertToNinjaPath(mod_files[p.LogicalName]));
+          this->ConvertToNinjaPath(mod_files[p.LogicalName].BmiPath));
       }
       build.ImplicitDeps.clear();
       for (auto const& r : object.Requires) {
         auto mit = mod_files.find(r.LogicalName);
         if (mit != mod_files.end()) {
-          build.ImplicitDeps.push_back(this->ConvertToNinjaPath(mit->second));
+          build.ImplicitDeps.push_back(
+            this->ConvertToNinjaPath(mit->second.BmiPath));
         }
       }
       build.Variables.clear();
@@ -2686,7 +2733,8 @@ bool cmGlobalNinjaGenerator::WriteDyndepFile(
         auto mm = CxxModuleMapContent(*modmap_fmt, locs, object, usages);
 
         // XXX(modmap): If changing this path construction, change
-        // `cmNinjaTargetGenerator::WriteObjectBuildStatements` to generate the
+        // `cmNinjaTargetGenerator::WriteObjectBuildStatements` and
+        // `cmNinjaTargetGenerator::ExportObjectCompileCommand` to generate the
         // corresponding file path.
         cmGeneratedFileStream mmf(cmStrCat(object.PrimaryOutput, ".modmap"));
         mmf << mm;
@@ -2740,7 +2788,7 @@ bool cmGlobalNinjaGenerator::WriteDyndepFile(
     [mod_files](std::string const& name) -> cm::optional<std::string> {
     auto m = mod_files.find(name);
     if (m != mod_files.end()) {
-      return m->second;
+      return m->second.BmiPath;
     }
     return {};
   };

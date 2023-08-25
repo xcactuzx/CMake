@@ -675,7 +675,6 @@ public:
 
   FileSetType HeadersFileSets;
   FileSetType CxxModulesFileSets;
-  FileSetType CxxModuleHeadersFileSets;
 
   cmTargetInternals();
 
@@ -734,13 +733,6 @@ cmTargetInternals::cmTargetInternals()
                        "The default C++ module set"_s, "C++ module set"_s,
                        FileSetEntries("CXX_MODULE_SETS"_s),
                        FileSetEntries("INTERFACE_CXX_MODULE_SETS"_s))
-  , CxxModuleHeadersFileSets(
-      "CXX_MODULE_HEADER_UNITS"_s, "CXX_MODULE_HEADER_UNIT_DIRS"_s,
-      "CXX_MODULE_HEADER_UNIT_SET"_s, "CXX_MODULE_HEADER_UNIT_DIRS_"_s,
-      "CXX_MODULE_HEADER_UNIT_SET_"_s, "C++ module header"_s,
-      "The default C++ module header set"_s, "C++ module header set"_s,
-      FileSetEntries("CXX_MODULE_HEADER_UNIT_SETS"_s),
-      FileSetEntries("INTERFACE_CXX_MODULE_HEADER_UNIT_SETS"_s))
 {
 }
 
@@ -819,12 +811,12 @@ std::pair<bool, cmValue> FileSetType::ReadProperties(
     did_read = true;
   } else if (prop == this->SelfEntries.PropertyName) {
     static std::string output;
-    output = cmJoin(this->SelfEntries.Entries, ";"_s);
+    output = cmList::to_string(this->SelfEntries.Entries);
     value = cmValue(output);
     did_read = true;
   } else if (prop == this->InterfaceEntries.PropertyName) {
     static std::string output;
-    output = cmJoin(this->InterfaceEntries.Entries, ";"_s);
+    output = cmList::to_string(this->InterfaceEntries.Entries);
     value = cmValue(output);
     did_read = true;
   } else if (cmHasPrefix(prop, this->DirectoryPrefix)) {
@@ -907,7 +899,7 @@ std::pair<bool, cmValue> UsageRequirementProperty::Read(
     if (!this->Entries.empty()) {
       // Storage to back the returned `cmValue`.
       static std::string output;
-      output = cmJoin(this->Entries, ";");
+      output = cmList::to_string(this->Entries);
       value = cmValue(output);
     }
     did_read = true;
@@ -1218,7 +1210,8 @@ void cmTarget::SetLanguageStandardProperty(std::string const& lang,
   languageStandardProperty.Backtraces.emplace_back(featureBacktrace);
 }
 
-void cmTarget::AddUtility(std::string const& name, bool cross, cmMakefile* mf)
+void cmTarget::AddUtility(std::string const& name, bool cross,
+                          cmMakefile const* mf)
 {
   this->impl->Utilities.insert(BT<std::pair<std::string, bool>>(
     { name, cross }, mf ? mf->GetBacktrace() : cmListFileBacktrace()));
@@ -1751,11 +1744,6 @@ cmBTStringRange cmTarget::GetCxxModuleSetsEntries() const
   return cmMakeRange(this->impl->CxxModulesFileSets.SelfEntries.Entries);
 }
 
-cmBTStringRange cmTarget::GetCxxModuleHeaderSetsEntries() const
-{
-  return cmMakeRange(this->impl->CxxModuleHeadersFileSets.SelfEntries.Entries);
-}
-
 cmBTStringRange cmTarget::GetInterfaceHeaderSetsEntries() const
 {
   return cmMakeRange(this->impl->HeadersFileSets.InterfaceEntries.Entries);
@@ -1764,12 +1752,6 @@ cmBTStringRange cmTarget::GetInterfaceHeaderSetsEntries() const
 cmBTStringRange cmTarget::GetInterfaceCxxModuleSetsEntries() const
 {
   return cmMakeRange(this->impl->CxxModulesFileSets.InterfaceEntries.Entries);
-}
-
-cmBTStringRange cmTarget::GetInterfaceCxxModuleHeaderSetsEntries() const
-{
-  return cmMakeRange(
-    this->impl->CxxModuleHeadersFileSets.InterfaceEntries.Entries);
 }
 
 namespace {
@@ -1810,26 +1792,7 @@ MAKE_PROP(INTERFACE_LINK_LIBRARIES_DIRECT_EXCLUDE);
 #undef MAKE_PROP
 }
 
-namespace {
-// to workaround bug on GCC/AIX
-// Define a template to force conversion to std::string
-template <typename ValueType>
-std::string ConvertToString(ValueType value);
-
-template <>
-std::string ConvertToString<const char*>(const char* value)
-{
-  return std::string(value);
-}
-template <>
-std::string ConvertToString<cmValue>(cmValue value)
-{
-  return std::string(*value);
-}
-}
-
-template <typename ValueType>
-void cmTarget::StoreProperty(const std::string& prop, ValueType value)
+void cmTarget::SetProperty(const std::string& prop, cmValue value)
 {
   if (prop == propMANUALLY_ADDED_DEPENDENCIES) {
     this->impl->Makefile->IssueMessage(
@@ -1894,7 +1857,6 @@ void cmTarget::StoreProperty(const std::string& prop, ValueType value)
   FileSetType* fileSetTypes[] = {
     &this->impl->HeadersFileSets,
     &this->impl->CxxModulesFileSets,
-    &this->impl->CxxModuleHeadersFileSets,
   };
 
   for (auto* fileSetType : fileSetTypes) {
@@ -1975,7 +1937,7 @@ void cmTarget::StoreProperty(const std::string& prop, ValueType value)
 
     std::string reusedFrom = reusedTarget->GetSafeProperty(prop);
     if (reusedFrom.empty()) {
-      reusedFrom = ConvertToString(value);
+      reusedFrom = *value;
     }
 
     this->impl->Properties.SetProperty(prop, reusedFrom);
@@ -2068,7 +2030,6 @@ void cmTarget::AppendProperty(const std::string& prop,
   FileSetType* fileSetTypes[] = {
     &this->impl->HeadersFileSets,
     &this->impl->CxxModulesFileSets,
-    &this->impl->CxxModuleHeadersFileSets,
   };
 
   for (auto* fileSetType : fileSetTypes) {
@@ -2089,15 +2050,6 @@ void cmTarget::AppendProperty(const std::string& prop,
   } else {
     this->impl->Properties.AppendProperty(prop, value, asString);
   }
-}
-
-void cmTarget::SetProperty(const std::string& prop, const char* value)
-{
-  this->StoreProperty(prop, value);
-}
-void cmTarget::SetProperty(const std::string& prop, cmValue value)
-{
-  this->StoreProperty(prop, value);
 }
 
 template <typename ValueType>
@@ -2178,7 +2130,7 @@ cmValue cmTargetInternals::GetFileSetDirectories(
     return nullptr;
   }
   static std::string output;
-  output = cmJoin(fileSet->GetDirectoryEntries(), ";"_s);
+  output = cmList::to_string(fileSet->GetDirectoryEntries());
   return cmValue(output);
 }
 
@@ -2198,7 +2150,7 @@ cmValue cmTargetInternals::GetFileSetPaths(cmTarget const* self,
     return nullptr;
   }
   static std::string output;
-  output = cmJoin(fileSet->GetFileEntries(), ";"_s);
+  output = cmList::to_string(fileSet->GetFileEntries());
   return cmValue(output);
 }
 
@@ -2543,7 +2495,7 @@ cmValue cmTarget::GetProperty(const std::string& prop) const
         [](const BT<std::pair<std::string, bool>>& item) -> std::string {
           return item.Value.first;
         });
-      output = cmJoin(utilities, ";");
+      output = cmList::to_string(utilities);
       return cmValue(output);
     }
     if (prop == propIMPORTED) {
@@ -2573,7 +2525,6 @@ cmValue cmTarget::GetProperty(const std::string& prop) const
     FileSetType* fileSetTypes[] = {
       &this->impl->HeadersFileSets,
       &this->impl->CxxModulesFileSets,
-      &this->impl->CxxModuleHeadersFileSets,
     };
 
     for (auto* fileSetType : fileSetTypes) {
@@ -2919,9 +2870,6 @@ std::pair<cmFileSet*, bool> cmTarget::GetOrCreateFileSet(
       this->impl->HeadersFileSets.AddFileSet(name, vis, std::move(bt));
     } else if (type == this->impl->CxxModulesFileSets.TypeName) {
       this->impl->CxxModulesFileSets.AddFileSet(name, vis, std::move(bt));
-    } else if (type == this->impl->CxxModuleHeadersFileSets.TypeName) {
-      this->impl->CxxModuleHeadersFileSets.AddFileSet(name, vis,
-                                                      std::move(bt));
     }
   }
   return std::make_pair(&result.first->second, result.second);
@@ -2935,9 +2883,6 @@ std::string cmTarget::GetFileSetsPropertyName(const std::string& type)
   if (type == "CXX_MODULES") {
     return "CXX_MODULE_SETS";
   }
-  if (type == "CXX_MODULE_HEADER_UNITS") {
-    return "CXX_MODULE_HEADER_UNIT_SETS";
-  }
   return "";
 }
 
@@ -2948,9 +2893,6 @@ std::string cmTarget::GetInterfaceFileSetsPropertyName(const std::string& type)
   }
   if (type == "CXX_MODULES") {
     return "INTERFACE_CXX_MODULE_SETS";
-  }
-  if (type == "CXX_MODULE_HEADER_UNITS") {
-    return "INTERFACE_CXX_MODULE_HEADER_UNIT_SETS";
   }
   return "";
 }
@@ -2980,7 +2922,6 @@ std::vector<std::string> cmTarget::GetAllInterfaceFileSets() const
 
   appendEntries(this->impl->HeadersFileSets.InterfaceEntries.Entries);
   appendEntries(this->impl->CxxModulesFileSets.InterfaceEntries.Entries);
-  appendEntries(this->impl->CxxModuleHeadersFileSets.InterfaceEntries.Entries);
 
   return result;
 }

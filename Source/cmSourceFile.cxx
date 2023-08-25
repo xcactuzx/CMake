@@ -8,6 +8,7 @@
 #include <cmext/string_view>
 
 #include "cmGlobalGenerator.h"
+#include "cmList.h"
 #include "cmListFileCache.h"
 #include "cmMakefile.h"
 #include "cmMessageType.h"
@@ -278,8 +279,7 @@ bool cmSourceFile::Matches(cmSourceFileLocation const& loc)
   return this->Location.Matches(loc);
 }
 
-template <typename ValueType>
-void cmSourceFile::StoreProperty(const std::string& prop, ValueType value)
+void cmSourceFile::SetProperty(const std::string& prop, cmValue value)
 {
   if (prop == propINCLUDE_DIRECTORIES) {
     this->IncludeDirectories.clear();
@@ -302,15 +302,6 @@ void cmSourceFile::StoreProperty(const std::string& prop, ValueType value)
   } else {
     this->Properties.SetProperty(prop, value);
   }
-}
-
-void cmSourceFile::SetProperty(const std::string& prop, const char* value)
-{
-  this->StoreProperty(prop, value);
-}
-void cmSourceFile::SetProperty(const std::string& prop, cmValue value)
-{
-  this->StoreProperty(prop, value);
 }
 
 void cmSourceFile::AppendProperty(const std::string& prop,
@@ -400,7 +391,7 @@ cmValue cmSourceFile::GetProperty(const std::string& prop) const
     }
 
     static std::string output;
-    output = cmJoin(this->IncludeDirectories, ";");
+    output = cmList::to_string(this->IncludeDirectories);
     return cmValue(output);
   }
 
@@ -410,7 +401,7 @@ cmValue cmSourceFile::GetProperty(const std::string& prop) const
     }
 
     static std::string output;
-    output = cmJoin(this->CompileOptions, ";");
+    output = cmList::to_string(this->CompileOptions);
     return cmValue(output);
   }
 
@@ -420,7 +411,7 @@ cmValue cmSourceFile::GetProperty(const std::string& prop) const
     }
 
     static std::string output;
-    output = cmJoin(this->CompileDefinitions, ";");
+    output = cmList::to_string(this->CompileDefinitions);
     return cmValue(output);
   }
 

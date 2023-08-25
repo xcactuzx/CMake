@@ -753,14 +753,12 @@ void cmGlobalXCodeGenerator::CreateReRunCMakeFile(
 
   makefileStream << this->ConvertToRelativeForMake(checkCache)
                  << ": $(TARGETS)\n";
-  makefileStream << "\t"
-                 << this->ConvertToRelativeForMake(
-                      cmSystemTools::GetCMakeCommand())
-                 << " -H"
-                 << this->ConvertToRelativeForMake(root->GetSourceDirectory())
-                 << " -B"
-                 << this->ConvertToRelativeForMake(root->GetBinaryDirectory())
-                 << "\n";
+  makefileStream
+    << "\t" << this->ConvertToRelativeForMake(cmSystemTools::GetCMakeCommand())
+    << " -S" << this->ConvertToRelativeForMake(root->GetSourceDirectory())
+    << " -B" << this->ConvertToRelativeForMake(root->GetBinaryDirectory())
+    << (cm->GetIgnoreWarningAsError() ? " --compile-no-warning-as-error" : "")
+    << "\n";
 }
 
 static bool objectIdLessThan(const std::unique_ptr<cmXCodeObject>& l,
@@ -2765,7 +2763,7 @@ void cmGlobalXCodeGenerator::CreateBuildSettings(cmGeneratorTarget* gtgt,
       if (emitted.insert(frameworkDir).second) {
         std::string incpath = this->XCodeEscapePath(frameworkDir);
         if (emitSystemIncludes &&
-            gtgt->IsSystemIncludeDirectory(include, configName,
+            gtgt->IsSystemIncludeDirectory(frameworkDir, configName,
                                            langForIncludes)) {
           sysfdirs.Add(incpath);
         } else {
@@ -3910,8 +3908,6 @@ void cmGlobalXCodeGenerator::AddDependAndLinkInformation(cmXCodeObject* target)
       // otherwise we end up hard-coding a path to the wrong SDK for
       // SDK-provided frameworks that are added by their full path.
       std::set<std::string> emitted(cli->GetFrameworkPathsEmitted());
-      const auto& fwPaths = cli->GetFrameworkPaths();
-      emitted.insert(fwPaths.begin(), fwPaths.end());
       BuildObjectListOrString libPaths(this, true);
       BuildObjectListOrString fwSearchPaths(this, true);
       for (auto const& libItem : configItemMap[configName]) {
@@ -5158,6 +5154,10 @@ std::string cmGlobalXCodeGenerator::GetDeploymentPlatform(const cmMakefile* mf)
     case cmMakefile::AppleSDK::WatchOS:
     case cmMakefile::AppleSDK::WatchSimulator:
       return "WATCHOS_DEPLOYMENT_TARGET";
+
+    case cmMakefile::AppleSDK::XROS:
+    case cmMakefile::AppleSDK::XRSimulator:
+      return "XROS_DEPLOYMENT_TARGET";
 
     case cmMakefile::AppleSDK::MacOS:
     default:
