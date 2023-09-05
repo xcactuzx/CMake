@@ -142,11 +142,14 @@ string(REPLACE "," ";" CMake_TEST_MODULE_COMPILATION "${CMake_TEST_MODULE_COMPIL
 if ("named" IN_LIST CMake_TEST_MODULE_COMPILATION)
   run_cxx_module_test(simple)
   run_cxx_module_test(library library-static -DBUILD_SHARED_LIBS=OFF)
+  run_cxx_module_test(object-library)
   run_cxx_module_test(generated)
   run_cxx_module_test(deep-chain)
   run_cxx_module_test(duplicate)
   set(RunCMake_CXXModules_NO_TEST 1)
   run_cxx_module_test(circular)
+  run_cxx_module_test(try-compile)
+  run_cxx_module_test(try-run)
   unset(RunCMake_CXXModules_NO_TEST)
   run_cxx_module_test(same-src-name)
   run_cxx_module_test(scan_properties)
@@ -184,7 +187,20 @@ endif ()
 if ("export_bmi" IN_LIST CMake_TEST_MODULE_COMPILATION)
   run_cxx_module_test(export-interface-no-properties-build)
   run_cxx_module_test(export-interface-build)
+  run_cxx_module_test(export-usage-build)
   run_cxx_module_test(export-bmi-and-interface-build)
+
+  if ("collation" IN_LIST CMake_TEST_MODULE_COMPILATION AND
+      "bmionly" IN_LIST CMake_TEST_MODULE_COMPILATION)
+    set(test_suffix export-interface-build)
+    run_cxx_module_test(import-modules "import-modules-${test_suffix}" "-DCMAKE_PREFIX_PATH=${RunCMake_BINARY_DIR}/examples/${test_suffix}-build")
+
+    set(test_suffix export-interface-no-properties-build)
+    run_cxx_module_test(import-modules "import-modules-${test_suffix}" "-DCMAKE_PREFIX_PATH=${RunCMake_BINARY_DIR}/examples/${test_suffix}-build" -DNO_PROPERTIES=1)
+
+    set(test_suffix export-bmi-and-interface-build)
+    run_cxx_module_test(import-modules "import-modules-${test_suffix}" "-DCMAKE_PREFIX_PATH=${RunCMake_BINARY_DIR}/examples/${test_suffix}-build" -DWITH_BMIS=1)
+  endif ()
 endif ()
 
 # All of the following tests perform installation.
@@ -198,6 +214,21 @@ if ("install_bmi" IN_LIST CMake_TEST_MODULE_COMPILATION)
   if ("export_bmi" IN_LIST CMake_TEST_MODULE_COMPILATION)
     run_cxx_module_test(export-interface-no-properties-install)
     run_cxx_module_test(export-interface-install)
+    run_cxx_module_test(export-usage-install)
     run_cxx_module_test(export-bmi-and-interface-install)
+
+    if ("collation" IN_LIST CMake_TEST_MODULE_COMPILATION AND
+        "bmionly" IN_LIST CMake_TEST_MODULE_COMPILATION)
+      set(RunCMake_CXXModules_INSTALL 0)
+      set(test_suffix export-interface-install)
+      run_cxx_module_test(import-modules "import-modules-${test_suffix}" "-DCMAKE_PREFIX_PATH=${RunCMake_BINARY_DIR}/examples/${test_suffix}-install")
+
+      set(test_suffix export-interface-no-properties-install)
+      run_cxx_module_test(import-modules "import-modules-${test_suffix}" "-DCMAKE_PREFIX_PATH=${RunCMake_BINARY_DIR}/examples/${test_suffix}-install" -DNO_PROPERTIES=1)
+
+      set(test_suffix export-bmi-and-interface-install)
+      run_cxx_module_test(import-modules "import-modules-${test_suffix}" "-DCMAKE_PREFIX_PATH=${RunCMake_BINARY_DIR}/examples/${test_suffix}-install" -DWITH_BMIS=1)
+      set(RunCMake_CXXModules_INSTALL 1)
+    endif ()
   endif ()
 endif ()

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <type_traits>
 #include <utility>
 
 #include <cm/string_view>
@@ -170,9 +171,9 @@ std::vector<std::string> cmCommonTargetGenerator::GetLinkedTargetDirectories(
   cmGlobalCommonGenerator* const gg = this->GlobalCommonGenerator;
   if (cmComputeLinkInformation* cli =
         this->GeneratorTarget->GetLinkInformation(config)) {
-    cmComputeLinkInformation::ItemVector const& items = cli->GetItems();
-    for (auto const& item : items) {
-      cmGeneratorTarget const* linkee = item.Target;
+    std::vector<cmGeneratorTarget const*> targets;
+    for (auto const& item : cli->GetItems()) {
+      auto const* linkee = item.Target;
       if (linkee &&
           !linkee->IsImported()
           // Skip targets that build after this one in a static lib cycle.

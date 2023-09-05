@@ -31,6 +31,7 @@ set(CMakeLib_TESTS
   testCMExtAlgorithm.cxx
   testCMExtEnumSet.cxx
   testList.cxx
+  testCMakePath.cxx
   )
 if(CMake_ENABLE_DEBUGGER)
   list(APPEND CMakeLib_TESTS
@@ -72,6 +73,9 @@ if(CMake_BUILD_PCH)
   target_precompile_headers(CMakeLibTests PRIVATE "<iostream>" "<cm3p/uv.h>")
   target_compile_definitions(CMakeLibTests PRIVATE "NOMINMAX")
 endif()
+if(WIN32)
+  target_compile_definitions(CMakeLibTests PRIVATE WIN32_LEAN_AND_MEAN)
+endif()
 
 set_property(TARGET CMakeLibTests PROPERTY C_CLANG_TIDY "")
 set_property(TARGET CMakeLibTests PROPERTY CXX_CLANG_TIDY "")
@@ -107,4 +111,7 @@ if(CMake_ENABLE_DEBUGGER)
     add_test(NAME CMakeLib.testDebuggerNamedPipe-${case} COMMAND testDebuggerNamedPipe ${testDebuggerNamedPipe_${case}_ARGS})
     set_property(TEST CMakeLib.testDebuggerNamedPipe-${case} PROPERTY TIMEOUT 300)
   endforeach()
+  if(WIN32)
+    target_compile_definitions(testDebuggerNamedPipe PRIVATE WIN32_LEAN_AND_MEAN)
+  endif()
 endif()

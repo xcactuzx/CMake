@@ -965,12 +965,15 @@ if(CUDAToolkit_FOUND)
   # search paths without symlinks
   if(CUDAToolkit_LIBRARY_DIR  MATCHES ".*/cuda/${CUDAToolkit_VERSION_MAJOR}.${CUDAToolkit_VERSION_MINOR}/lib64$")
     # Search location for math_libs/
-    file(REAL_PATH "${CUDAToolkit_LIBRARY_DIR}/../../../" _cmake_search_dir)
-    list(APPEND CUDAToolkit_LIBRARY_SEARCH_DIRS "${_cmake_search_dir}")
+    block(SCOPE_FOR POLICIES)
+      cmake_policy(SET CMP0152 NEW)
+      file(REAL_PATH "${CUDAToolkit_LIBRARY_DIR}/../../../../../" _cmake_search_dir)
+      list(APPEND CUDAToolkit_LIBRARY_SEARCH_DIRS "${_cmake_search_dir}")
 
-    # Search location for extras like cupti
-    file(REAL_PATH "${CUDAToolkit_LIBRARY_DIR}/../" _cmake_search_dir)
-    list(APPEND CUDAToolkit_LIBRARY_SEARCH_DIRS "${_cmake_search_dir}")
+      # Search location for extras like cupti
+      file(REAL_PATH "${CUDAToolkit_LIBRARY_DIR}/../../../" _cmake_search_dir)
+      list(APPEND CUDAToolkit_LIBRARY_SEARCH_DIRS "${_cmake_search_dir}")
+    endblock()
   endif()
 
   # If no `CUDAToolkit_LIBRARY_ROOT` exists set it based on CUDAToolkit_LIBRARY_DIR
@@ -1009,17 +1012,26 @@ if(CUDAToolkit_FOUND)
     )
     # Don't try any stub directories until we have exhausted all other
     # search locations.
-    find_library(CUDA_${lib_name}_LIBRARY
-      NAMES ${search_names}
-      HINTS ${CUDAToolkit_LIBRARY_SEARCH_DIRS}
-            ENV CUDA_PATH
-      PATH_SUFFIXES lib64/stubs lib/x64/stubs lib/stubs stubs
-    )
+    set(CUDA_IMPORT_PROPERTY IMPORTED_LOCATION)
+    set(CUDA_IMPORT_TYPE     UNKNOWN)
+    if(NOT CUDA_${lib_name}_LIBRARY)
+      find_library(CUDA_${lib_name}_LIBRARY
+        NAMES ${search_names}
+        HINTS ${CUDAToolkit_LIBRARY_SEARCH_DIRS}
+              ENV CUDA_PATH
+        PATH_SUFFIXES lib64/stubs lib/x64/stubs lib/stubs stubs
+      )
+      if(CUDA_${lib_name}_LIBRARY AND NOT WIN32)
+        # Use `IMPORTED_IMPLIB` so that we don't add a `-rpath` entry for stub directories
+        set(CUDA_IMPORT_PROPERTY IMPORTED_IMPLIB)
+        set(CUDA_IMPORT_TYPE     SHARED)
+      endif()
+    endif()
 
     mark_as_advanced(CUDA_${lib_name}_LIBRARY)
 
     if (NOT TARGET CUDA::${lib_name} AND CUDA_${lib_name}_LIBRARY)
-      add_library(CUDA::${lib_name} UNKNOWN IMPORTED)
+      add_library(CUDA::${lib_name} ${CUDA_IMPORT_TYPE} IMPORTED)
       target_include_directories(CUDA::${lib_name} SYSTEM INTERFACE "${CUDAToolkit_INCLUDE_DIRS}")
       if(DEFINED CUDAToolkit_MATH_INCLUDE_DIR)
         string(FIND ${CUDA_${lib_name}_LIBRARY} "math_libs" math_libs)
@@ -1027,7 +1039,7 @@ if(CUDAToolkit_FOUND)
           target_include_directories(CUDA::${lib_name} SYSTEM INTERFACE "${CUDAToolkit_MATH_INCLUDE_DIR}")
         endif()
       endif()
-      set_property(TARGET CUDA::${lib_name} PROPERTY IMPORTED_LOCATION "${CUDA_${lib_name}_LIBRARY}")
+      set_property(TARGET CUDA::${lib_name} PROPERTY ${CUDA_IMPORT_PROPERTY} "${CUDA_${lib_name}_LIBRARY}")
       foreach(dep ${arg_DEPS})
         if(TARGET CUDA::${dep})
           target_link_libraries(CUDA::${lib_name} INTERFACE CUDA::${dep})
@@ -1200,7 +1212,7 @@ if(CUDAToolkit_FOUND)
     endif()
   endif()
 
-  _CUDAToolkit_find_and_add_import_lib(nvrtc_builtins DEPS cuda_driver)
+  _CUDAToolkit_find_and_add_import_lib(nvrtc_builtins ALT nvrtc-builtins DEPS cuda_driver)
   _CUDAToolkit_find_and_add_import_lib(nvrtc DEPS nvrtc_builtins nvJitLink)
   if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL 11.5.0)
     _CUDAToolkit_find_and_add_import_lib(nvrtc_builtins_static ALT nvrtc-builtins_static DEPS cuda_driver)

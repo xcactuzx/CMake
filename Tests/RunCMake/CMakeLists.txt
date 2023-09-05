@@ -165,14 +165,21 @@ if(GIT_EXECUTABLE)
   add_RunCMake_test(CMP0150)
 endif()
 
+if(NOT WIN32 OR CYGWIN)
+  add_RunCMake_test(CMP0152)
+endif()
+
+add_RunCMake_test(CMP0153)
+
 # The test for Policy 65 requires the use of the
 # CMAKE_SHARED_LIBRARY_LINK_CXX_FLAGS variable, which both the VS and Xcode
 # generators ignore.  The policy will have no effect on those generators.
 if(NOT CMAKE_GENERATOR MATCHES "Visual Studio|Xcode")
   add_RunCMake_test(CMP0065 -DCMAKE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME})
 endif()
+add_executable(detect_jobserver detect_jobserver.c)
 if(CMAKE_GENERATOR MATCHES "Make")
-  add_RunCMake_test(Make -DMAKE_IS_GNU=${MAKE_IS_GNU})
+  add_RunCMake_test(Make -DMAKE_IS_GNU=${MAKE_IS_GNU} -DDETECT_JOBSERVER=$<TARGET_FILE:detect_jobserver>)
 endif()
 unset(ninja_test_with_qt_version)
 unset(ninja_qt_args)
@@ -529,6 +536,7 @@ add_RunCMake_test(option)
 add_RunCMake_test(PrintHelpers)
 add_RunCMake_test(project -DCMake_TEST_RESOURCES=${CMake_TEST_RESOURCES})
 add_RunCMake_test(project_injected)
+add_RunCMake_test(property_init)
 add_RunCMake_test(DependencyProviders)
 add_RunCMake_test(return)
 add_RunCMake_test(separate_arguments)
@@ -696,6 +704,23 @@ endif()
 if(CMAKE_C_COMPILER_ID STREQUAL "AppleClang"
     AND NOT CMAKE_C_COMPILER_VERSION VERSION_LESS 6.0)
   add_RunCMake_test(Framework)
+  if(NOT DEFINED CMake_TEST_XcFramework)
+    set(CMake_TEST_XcFramework ON)
+  endif()
+  if(CMake_TEST_XcFramework AND NOT CMAKE_C_COMPILER_VERSION VERSION_LESS 11.0)
+    set(XcFramework_ARGS -DCMAKE_C_COMPILER_VERSION=${CMAKE_C_COMPILER_VERSION})
+    add_RunCMake_test(XcFramework)
+
+    # This test can take a very long time due to lots of combinations.
+    # Use a long default timeout and provide an option to customize it.
+    if(NOT DEFINED CMake_TEST_XcFramework_TIMEOUT)
+      set(CMake_TEST_XcFramework_TIMEOUT 3000)
+    endif()
+    set_tests_properties(RunCMake.XcFramework PROPERTIES
+      TIMEOUT "${CMake_TEST_XcFramework_TIMEOUT}"
+      RUN_SERIAL TRUE
+      )
+  endif()
 endif()
 
 add_RunCMake_test(File_Archive)
@@ -826,7 +851,7 @@ endif()
 if(CMake_TEST_RunCMake_ExternalProject_DOWNLOAD_SERVER_TIMEOUT)
   list(APPEND ExternalProject_ARGS -DDOWNLOAD_SERVER_TIMEOUT=${CMake_TEST_RunCMake_ExternalProject_DOWNLOAD_SERVER_TIMEOUT})
 endif()
-add_RunCMake_test(ExternalProject)
+add_RunCMake_test(ExternalProject -DDETECT_JOBSERVER=$<TARGET_FILE:detect_jobserver>)
 add_RunCMake_test(FetchContent)
 add_RunCMake_test(FetchContent_find_package)
 set(CTestCommandLine_ARGS -DPython_EXECUTABLE=${Python_EXECUTABLE})
@@ -1039,6 +1064,7 @@ add_RunCMake_test(CMakePresetsWorkflow
   )
 
 add_RunCMake_test(VerifyHeaderSets)
+add_RunCMake_test(set_tests_properties)
 
 if(${CMAKE_GENERATOR} MATCHES "Make|Ninja")
   add_RunCMake_test(TransformDepfile)

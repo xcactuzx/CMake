@@ -24,6 +24,7 @@ The first signature is for adding a custom command to produce an output:
                      [COMMENT comment]
                      [DEPFILE depfile]
                      [JOB_POOL job_pool]
+                     [JOB_SERVER_AWARE <bool>]
                      [VERBATIM] [APPEND] [USES_TERMINAL]
                      [COMMAND_EXPAND_LISTS]
                      [DEPENDS_EXPLICIT_ONLY])
@@ -221,6 +222,19 @@ The options are:
   Using a pool that is not defined by :prop_gbl:`JOB_POOLS` causes
   an error by ninja at build time.
 
+``JOB_SERVER_AWARE``
+  .. versionadded:: 3.28
+
+  Specify that the command is GNU Make job server aware.
+
+  For the :generator:`Unix Makefiles`, :generator:`MSYS Makefiles`, and
+  :generator:`MinGW Makefiles` generators this will add the ``+`` prefix to the
+  recipe line. See the `GNU Make Documentation`_ for more information.
+
+  This option is silently ignored by other generators.
+
+.. _`GNU Make Documentation`: https://www.gnu.org/software/make/manual/html_node/MAKE-Variable.html
+
 ``MAIN_DEPENDENCY``
   Specify the primary input source file to the command.  This is
   treated just like any value given to the ``DEPENDS`` option
@@ -362,7 +376,7 @@ The options are:
 
   .. versionadded:: 3.27
 
-  Indicate that the command's ``DEPENDS`` argument represents all files
+  Indicates that the command's ``DEPENDS`` argument represents all files
   required by the command and implicit dependencies are not required.
 
   Without this option, if any target uses the output of the custom command,
@@ -375,6 +389,10 @@ The options are:
 
   Only the :ref:`Ninja Generators` actually use this information to remove
   unnecessary implicit dependencies.
+
+  See also the :prop_tgt:`OPTIMIZE_DEPENDENCIES` target property, which may
+  provide another way for reducing the impact of target dependencies in some
+  scenarios.
 
 Examples: Generating Files
 ^^^^^^^^^^^^^^^^^^^^^^^^^^

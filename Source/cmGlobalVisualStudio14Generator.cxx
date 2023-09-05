@@ -6,6 +6,7 @@
 #include <sstream>
 
 #include <cm/vector>
+#include <cmext/string_view>
 
 #include "cmGlobalGenerator.h"
 #include "cmGlobalGeneratorFactory.h"
@@ -66,7 +67,7 @@ public:
 
   cmDocumentationEntry GetDocumentation() const override
   {
-    return { std::string(vs14generatorName) + " [arch]",
+    return { cmStrCat(vs14generatorName, " [arch]"),
              "Generates Visual Studio 2015 project files.  "
              "Optional [arch] can be \"Win64\" or \"ARM\"." };
   }
@@ -81,8 +82,8 @@ public:
   std::vector<std::string> GetGeneratorNamesWithPlatform() const override
   {
     std::vector<std::string> names;
-    names.push_back(vs14generatorName + std::string(" ARM"));
-    names.push_back(vs14generatorName + std::string(" Win64"));
+    names.emplace_back(cmStrCat(vs14generatorName, " ARM"));
+    names.emplace_back(cmStrCat(vs14generatorName, " Win64"));
     return names;
   }
 
@@ -140,14 +141,103 @@ bool cmGlobalVisualStudio14Generator::MatchesGeneratorName(
 
 bool cmGlobalVisualStudio14Generator::InitializePlatformWindows(cmMakefile* mf)
 {
-  if (cmHasLiteralPrefix(this->SystemVersion, "10.0")) {
+  // If a Windows SDK version is explicitly requested, search for it.
+  if (this->GeneratorPlatformVersion) {
+    std::string const& version = *this->GeneratorPlatformVersion;
+
+    // VS 2019 and above support specifying plain "10.0".
+    if (version == "10.0"_s) {
+      if (this->Version >= VSVersion::VS16) {
+        this->SetWindowsTargetPlatformVersion("10.0", mf);
+        return true;
+      }
+      /* clang-format off */
+      mf->IssueMessage(MessageType::FATAL_ERROR, cmStrCat(
+          "Generator\n"
+          "  ", this->GetName(), "\n"
+          "given platform specification containing a\n"
+          "  version=10.0\n"
+          "field.  The value 10.0 is only supported by VS 2019 and above.\n"
+          ));
+      /* clang-format on */
+      return false;
+    }
+
+    if (cmHasLiteralPrefix(version, "10.0.")) {
+      return this->SelectWindows10SDK(mf);
+    }
+
+    if (version == "8.1"_s) {
+      if (this->IsWin81SDKInstalled()) {
+        this->SetWindowsTargetPlatformVersion("8.1", mf);
+        return true;
+      }
+      /* clang-format off */
+      mf->IssueMessage(MessageType::FATAL_ERROR, cmStrCat(
+          "Generator\n"
+          "  ", this->GetName(), "\n"
+          "given platform specification containing a\n"
+          "  version=8.1\n"
+          "field, but the Windows 8.1 SDK is not installed.\n"
+          ));
+      /* clang-format on */
+      return false;
+    }
+
+    if (version.empty()) {
+      /* clang-format off */
+      mf->IssueMessage(MessageType::FATAL_ERROR, cmStrCat(
+          "Generator\n"
+          "  ", this->GetName(), "\n"
+          "given platform specification with empty\n"
+          "  version=\n"
+          "field.\n"
+          ));
+      /* clang-format on */
+      return false;
+    }
+
+    /* clang-format off */
+    mf->IssueMessage(MessageType::FATAL_ERROR, cmStrCat(
+        "Generator\n"
+        "  ", this->GetName(), "\n"
+        "given platform specification containing a\n"
+        "  version=", version, "\n"
+        "field with unsupported value.\n"
+        ));
+    /* clang-format on */
+    return false;
+  }
+
+  // If we are targeting Windows 10+, we select a Windows 10 SDK.
+  // If no Windows 8.1 SDK is installed, which is possible with VS 2017 and
+  // higher, then we must choose a Windows 10 SDK anyway.
+  if (cmHasLiteralPrefix(this->SystemVersion, "10.0") ||
+      !this->IsWin81SDKInstalled()) {
     return this->SelectWindows10SDK(mf);
   }
-  return this->VerifyNoGeneratorPlatformVersion(mf);
+
+  // Under CMP0149 NEW behavior, we search for a Windows 10 SDK even
+  // when targeting older Windows versions, but it is not required.
+  if (mf->GetPolicyStatus(cmPolicies::CMP0149) == cmPolicies::NEW) {
+    std::string const version = this->GetWindows10SDKVersion(mf);
+    if (!version.empty()) {
+      this->SetWindowsTargetPlatformVersion(version, mf);
+      return true;
+    }
+  }
+
+  // We are not targeting Windows 10+, so fall back to the Windows 8.1 SDK.
+  // For VS 2019 and above we must explicitly specify it.
+  if (this->Version >= cmGlobalVisualStudioGenerator::VSVersion::VS16 &&
+      !cmSystemTools::VersionCompareGreater(this->SystemVersion, "8.1")) {
+    this->SetWindowsTargetPlatformVersion("8.1", mf);
+  }
+  return true;
 }
 
 bool cmGlobalVisualStudio14Generator::VerifyNoGeneratorPlatformVersion(
-  cmMakefile* mf, cm::optional<std::string> reason) const
+  cmMakefile* mf) const
 {
   if (!this->GeneratorPlatformVersion) {
     return true;
@@ -160,31 +250,30 @@ bool cmGlobalVisualStudio14Generator::VerifyNoGeneratorPlatformVersion(
     "given platform specification containing a\n"
     "  version=" << *this->GeneratorPlatformVersion << "\n"
     "field.  The version field is not supported when targeting\n"
-    "  " << this->SystemName << " " << this->SystemVersion << "\n"
+    "  " << this->SystemName << ' ' << this->SystemVersion << '\n'
     ;
   /* clang-format on */
-  if (reason) {
-    e << *reason << ".";
-  }
   mf->IssueMessage(MessageType::FATAL_ERROR, e.str());
   return false;
 }
 
 bool cmGlobalVisualStudio14Generator::InitializeWindowsStore(cmMakefile* mf)
 {
-  std::ostringstream e;
   if (!this->SelectWindowsStoreToolset(this->DefaultPlatformToolset)) {
+    std::string e;
     if (this->DefaultPlatformToolset.empty()) {
-      e << this->GetName()
-        << " supports Windows Store '8.0', '8.1' and "
-           "'10.0', but not '"
-        << this->SystemVersion << "'.  Check CMAKE_SYSTEM_VERSION.";
+      e = cmStrCat(this->GetName(),
+                   " supports Windows Store '8.0', '8.1' and "
+                   "'10.0', but not '",
+                   this->SystemVersion, "'.  Check CMAKE_SYSTEM_VERSION.");
     } else {
-      e << "A Windows Store component with CMake requires both the Windows "
-        << "Desktop SDK as well as the Windows Store '" << this->SystemVersion
-        << "' SDK. Please make sure that you have both installed";
+      e = cmStrCat(
+        "A Windows Store component with CMake requires both the Windows "
+        "Desktop SDK as well as the Windows Store '",
+        this->SystemVersion,
+        "' SDK. Please make sure that you have both installed");
     }
-    mf->IssueMessage(MessageType::FATAL_ERROR, e.str());
+    mf->IssueMessage(MessageType::FATAL_ERROR, e);
     return false;
   }
   return true;
@@ -198,7 +287,7 @@ bool cmGlobalVisualStudio14Generator::InitializeAndroid(cmMakefile*)
 bool cmGlobalVisualStudio14Generator::ProcessGeneratorPlatformField(
   std::string const& key, std::string const& value)
 {
-  if (key == "version") {
+  if (key == "version"_s) {
     this->GeneratorPlatformVersion = value;
     return true;
   }
@@ -207,16 +296,6 @@ bool cmGlobalVisualStudio14Generator::ProcessGeneratorPlatformField(
 
 bool cmGlobalVisualStudio14Generator::SelectWindows10SDK(cmMakefile* mf)
 {
-  if (this->GeneratorPlatformVersion &&
-      this->GeneratorPlatformVersion->empty()) {
-    mf->IssueMessage(
-      MessageType::FATAL_ERROR,
-      cmStrCat("Generator\n  ", this->GetName(),
-               "\ngiven platform specification with empty\n  version=\n"
-               "field."));
-    return false;
-  }
-
   // Find the default version of the Windows 10 SDK.
   std::string const version = this->GetWindows10SDKVersion(mf);
 
@@ -231,7 +310,7 @@ bool cmGlobalVisualStudio14Generator::SelectWindows10SDK(cmMakefile* mf)
       return false;
     }
 
-    if (this->SystemName == "WindowsStore") {
+    if (this->SystemName == "WindowsStore"_s) {
       mf->IssueMessage(
         MessageType::FATAL_ERROR,
         "Could not find an appropriate version of the Windows 10 SDK"
@@ -248,12 +327,14 @@ void cmGlobalVisualStudio14Generator::SetWindowsTargetPlatformVersion(
   std::string const& version, cmMakefile* mf)
 {
   this->WindowsTargetPlatformVersion = version;
-  if (!cmSystemTools::VersionCompareEqual(this->WindowsTargetPlatformVersion,
+  if (!this->WindowsTargetPlatformVersion.empty() &&
+      !cmSystemTools::VersionCompareEqual(this->WindowsTargetPlatformVersion,
                                           this->SystemVersion)) {
-    std::ostringstream e;
-    e << "Selecting Windows SDK version " << this->WindowsTargetPlatformVersion
-      << " to target Windows " << this->SystemVersion << ".";
-    mf->DisplayStatus(e.str(), -1);
+    mf->DisplayStatus(cmStrCat("Selecting Windows SDK version ",
+                               this->WindowsTargetPlatformVersion,
+                               " to target Windows ", this->SystemVersion,
+                               '.'),
+                      -1);
   }
   mf->AddDefinition("CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION",
                     this->WindowsTargetPlatformVersion);
@@ -295,6 +376,11 @@ bool cmGlobalVisualStudio14Generator::IsWindowsStoreToolsetInstalled() const
                                           cmSystemTools::KeyWOW64_32);
 }
 
+bool cmGlobalVisualStudio14Generator::IsWin81SDKInstalled() const
+{
+  return true;
+}
+
 std::string cmGlobalVisualStudio14Generator::GetWindows10SDKMaxVersion(
   cmMakefile* mf) const
 {
@@ -333,7 +419,7 @@ struct NoWindowsH
 {
   bool operator()(std::string const& p)
   {
-    return !cmSystemTools::FileExists(p + "/um/windows.h", true);
+    return !cmSystemTools::FileExists(cmStrCat(p, "/um/windows.h"), true);
   }
 };
 class WindowsSDKTooRecent
@@ -356,16 +442,6 @@ std::string cmGlobalVisualStudio14Generator::GetWindows10SDKVersion(
   cmMakefile* mf)
 {
 #if defined(_WIN32) && !defined(__CYGWIN__)
-  // Accept specific version requests as-is.
-  if (this->GeneratorPlatformVersion) {
-    std::string const& ver = *this->GeneratorPlatformVersion;
-
-    // VS 2019 and above support specifying plain "10.0".
-    if (this->Version >= VSVersion::VS16 && ver == "10.0") {
-      return ver;
-    }
-  }
-
   std::vector<std::string> win10Roots;
 
   {
@@ -400,7 +476,7 @@ std::string cmGlobalVisualStudio14Generator::GetWindows10SDKVersion(
   std::vector<std::string> sdks;
   // Grab the paths of the different SDKs that are installed
   for (std::string const& i : win10Roots) {
-    std::string path = i + "/Include/*";
+    std::string path = cmStrCat(i, "/Include/*");
     cmSystemTools::GlobDirs(path, sdks);
   }
 

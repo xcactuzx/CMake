@@ -19,18 +19,16 @@
 #include <cmext/algorithm>
 #include <cmext/string_view>
 
-#include "cm_codecvt_Encoding.hxx"
-
 #include "cmBuildOptions.h"
 #include "cmCustomCommandLines.h"
 #include "cmDuration.h"
 #include "cmExportSet.h"
+#include "cmLocalGenerator.h"
 #include "cmStateSnapshot.h"
 #include "cmStringAlgorithms.h"
 #include "cmSystemTools.h"
 #include "cmTarget.h"
 #include "cmTargetDepend.h"
-#include "cmTransformDepfile.h"
 #include "cmValue.h"
 
 #if !defined(CMAKE_BOOTSTRAP)
@@ -41,13 +39,15 @@
 
 #define CMAKE_DIRECTORY_ID_SEP "::@"
 
+enum class cmDepfileFormat;
+enum class codecvt_Encoding;
+
 class cmDirectoryId;
 class cmExportBuildFileGenerator;
 class cmExternalMakefileProjectGenerator;
 class cmGeneratorTarget;
 class cmInstallRuntimeDependencySet;
 class cmLinkLineComputer;
-class cmLocalGenerator;
 class cmMakefile;
 class cmOutputConverter;
 class cmQtAutoGenGlobalInitializer;
@@ -157,6 +157,8 @@ public:
   virtual bool InspectConfigTypeVariables() { return true; }
 
   virtual bool CheckCxxModuleSupport() { return false; }
+
+  virtual bool IsGNUMakeJobServerAware() const { return false; }
 
   bool Compute();
   virtual void AddExtraIDETargets() {}
@@ -659,6 +661,8 @@ protected:
   virtual bool ComputeTargetDepends();
 
   virtual bool CheckALLOW_DUPLICATE_CUSTOM_TARGETS() const;
+
+  bool DiscoverSyntheticTargets();
 
   bool AddHeaderSetVerification();
 

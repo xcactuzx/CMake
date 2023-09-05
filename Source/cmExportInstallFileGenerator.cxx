@@ -126,6 +126,13 @@ bool cmExportInstallFileGenerator::GenerateMainFile(std::ostream& os)
       gt, cmGeneratorExpression::InstallInterface, properties);
 
     std::string errorMessage;
+    if (!this->PopulateCxxModuleExportProperties(
+          gt, properties, cmGeneratorExpression::InstallInterface,
+          errorMessage)) {
+      cmSystemTools::Error(errorMessage);
+      return false;
+    }
+
     if (!this->PopulateExportProperties(gt, properties, errorMessage)) {
       cmSystemTools::Error(errorMessage);
       return false;
@@ -616,7 +623,7 @@ std::string cmExportInstallFileGenerator::GetFileSetDirectories(
       resultVector.push_back(
         cmStrCat("\"$<$<CONFIG:", config, ">:", dest, ">\""));
     } else {
-      resultVector.push_back(cmStrCat('"', dest, '"'));
+      resultVector.emplace_back(cmStrCat('"', dest, '"'));
       break;
     }
   }
@@ -690,7 +697,7 @@ std::string cmExportInstallFileGenerator::GetFileSetFiles(
           resultVector.push_back(
             cmStrCat("\"$<$<CONFIG:", config, ">:", escapedFile, ">\""));
         } else {
-          resultVector.push_back(cmStrCat('"', escapedFile, '"'));
+          resultVector.emplace_back(cmStrCat('"', escapedFile, '"'));
         }
       }
     }

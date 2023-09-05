@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <sstream>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -24,6 +25,7 @@
 
 #include "cmAlgorithms.h"
 #include "cmComputeLinkInformation.h"
+#include "cmCryptoHash.h"
 #include "cmCustomCommand.h"
 #include "cmCustomCommandGenerator.h"
 #include "cmCustomCommandLines.h"
@@ -40,6 +42,7 @@
 #include "cmLinkLineDeviceComputer.h"
 #include "cmList.h"
 #include "cmMakefile.h"
+#include "cmMessageType.h"
 #include "cmRange.h"
 #include "cmRulePlaceholderExpander.h"
 #include "cmSourceFile.h"
@@ -57,18 +60,13 @@
 #include "cmVersion.h"
 #include "cmake.h"
 
-#if !defined(CMAKE_BOOTSTRAP)
-#  define CM_LG_ENCODE_OBJECT_NAMES
-#  include "cmCryptoHash.h"
-#endif
-
 #if defined(__HAIKU__)
 #  include <FindDirectory.h>
 #  include <StorageDefs.h>
 #endif
 
 // List of variables that are replaced when
-// rules are expanced.  These variables are
+// rules are expanded.  These variables are
 // replaced in the form <var> with GetSafeDefinition(var).
 // ${LANG} is replaced in the variable first with all enabled
 // languages.
@@ -1659,6 +1657,8 @@ std::vector<BT<std::string>> cmLocalGenerator::GetTargetCompileFlags(
   this->AppendFlags(compileFlags, mf->GetDefineFlags());
   this->AppendFlags(compileFlags,
                     this->GetFrameworkFlags(lang, config, target));
+  this->AppendFlags(compileFlags,
+                    this->GetXcFrameworkFlags(lang, config, target));
 
   if (!compileFlags.empty()) {
     flags.emplace_back(std::move(compileFlags));
@@ -1719,6 +1719,43 @@ std::string cmLocalGenerator::GetFrameworkFlags(std::string const& lang,
           lg->ConvertToOutputFormat(framework, cmOutputConverter::SHELL);
         flags += " ";
       }
+    }
+  }
+  return flags;
+}
+
+std::string cmLocalGenerator::GetXcFrameworkFlags(std::string const& lang,
+                                                  std::string const& config,
+                                                  cmGeneratorTarget* target)
+{
+  cmLocalGenerator* lg = target->GetLocalGenerator();
+  cmMakefile* mf = lg->GetMakefile();
+
+  if (!target->IsApple()) {
+    return std::string();
+  }
+
+  cmValue includeSearchFlag =
+    mf->GetDefinition(cmStrCat("CMAKE_INCLUDE_FLAG_", lang));
+  cmValue sysIncludeSearchFlag =
+    mf->GetDefinition(cmStrCat("CMAKE_INCLUDE_SYSTEM_FLAG_", lang));
+
+  if (!includeSearchFlag && !sysIncludeSearchFlag) {
+    return std::string{};
+  }
+
+  std::string flags;
+  if (cmComputeLinkInformation* cli = target->GetLinkInformation(config)) {
+    std::vector<std::string> const& paths = cli->GetXcFrameworkHeaderPaths();
+    for (std::string const& path : paths) {
+      if (sysIncludeSearchFlag &&
+          target->IsSystemIncludeDirectory(path, config, lang)) {
+        flags += *sysIncludeSearchFlag;
+      } else {
+        flags += *includeSearchFlag;
+      }
+      flags += lg->ConvertToOutputFormat(path, cmOutputConverter::SHELL);
+      flags += " ";
     }
   }
   return flags;
@@ -2985,20 +3022,18 @@ void cmLocalGenerator::WriteUnitySourceInclude(
     } else {
       pathToHash = "ABS_" + sf_full_path;
     }
+    cmCryptoHash hasher(cmCryptoHash::AlgoMD5);
     unity_file << "/* " << pathToHash << " */\n"
                << "#undef " << *uniqueIdName << "\n"
                << "#define " << *uniqueIdName << " unity_"
-#ifndef CMAKE_BOOTSTRAP
-               << cmSystemTools::ComputeStringMD5(pathToHash) << "\n"
-#endif
-      ;
+               << hasher.HashString(pathToHash) << "\n";
   }
 
   if (beforeInclude) {
     unity_file << *beforeInclude << "\n";
   }
 
-  unity_file << "// NOLINTNEXTLINE(bugprone-suspicious-include)\n";
+  unity_file << "/* NOLINTNEXTLINE(bugprone-suspicious-include) */\n";
   unity_file << "#include \"" << sf_full_path << "\"\n";
 
   if (afterInclude) {
@@ -3659,9 +3694,9 @@ void cmLocalGenerator::GenerateTargetInstallRules(
   }
 }
 
-#if defined(CM_LG_ENCODE_OBJECT_NAMES)
-static bool cmLocalGeneratorShortenObjectName(std::string& objName,
-                                              std::string::size_type max_len)
+namespace {
+bool cmLocalGeneratorShortenObjectName(std::string& objName,
+                                       std::string::size_type max_len)
 {
   // Check if the path can be shortened using an md5 sum replacement for
   // a portion of the path.
@@ -3705,7 +3740,7 @@ bool cmLocalGeneratorCheckObjectName(std::string& objName,
   // already too deep.
   return false;
 }
-#endif
+}
 
 std::string& cmLocalGenerator::CreateSafeUniqueObjectFileName(
   const std::string& sin, std::string const& dir_max)
@@ -3755,7 +3790,6 @@ std::string& cmLocalGenerator::CreateSafeUniqueObjectFileName(
       } while (!done);
     }
 
-#if defined(CM_LG_ENCODE_OBJECT_NAMES)
     if (!cmLocalGeneratorCheckObjectName(ssin, dir_max.size(),
                                          this->ObjectPathMax)) {
       // Warn if this is the first time the path has been seen.
@@ -3776,9 +3810,6 @@ std::string& cmLocalGenerator::CreateSafeUniqueObjectFileName(
         this->IssueMessage(MessageType::WARNING, m.str());
       }
     }
-#else
-    (void)dir_max;
-#endif
 
     // Insert the newly mapped object file name.
     std::map<std::string, std::string>::value_type e(sin, ssin);

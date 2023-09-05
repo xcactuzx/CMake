@@ -5,13 +5,14 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include <cm/memory>
 
 #include <cm3p/uv.h>
+
+#include "cm_fileno.hxx"
 
 #include "cmGetPipes.h"
 #include "cmStringAlgorithms.h"
@@ -631,7 +632,8 @@ bool testUVProcessChainInputFile(const char* helperCommand)
 
   cmUVProcessChainBuilder builder;
   builder.AddCommand({ helperCommand, "dedup" })
-    .SetExternalStream(cmUVProcessChainBuilder::Stream_INPUT, fileno(f.get()))
+    .SetExternalStream(cmUVProcessChainBuilder::Stream_INPUT,
+                       cm_fileno(f.get()))
     .SetBuiltinStream(cmUVProcessChainBuilder::Stream_OUTPUT);
 
   auto chain = builder.Start();
@@ -646,6 +648,20 @@ bool testUVProcessChainInputFile(const char* helperCommand)
   if (output != "HELO WRD!") {
     std::cout << "Output was \"" << output << "\", expected \"HELO WRD!\""
               << std::endl;
+    return false;
+  }
+
+  return true;
+}
+
+bool testUVProcessChainWait0(const char* helperCommand)
+{
+  cmUVProcessChainBuilder builder;
+  builder.AddCommand({ helperCommand, "echo" });
+
+  auto chain = builder.Start();
+  if (!chain.Wait(0)) {
+    std::cout << "Wait(0) returned false, should be true" << std::endl;
     return false;
   }
 
@@ -696,6 +712,11 @@ int testUVProcessChain(int argc, char** const argv)
 
   if (!testUVProcessChainInputFile(argv[1])) {
     std::cout << "While executing testUVProcessChainInputFile().\n";
+    return -1;
+  }
+
+  if (!testUVProcessChainWait0(argv[1])) {
+    std::cout << "While executing testUVProcessChainWait0().\n";
     return -1;
   }
 

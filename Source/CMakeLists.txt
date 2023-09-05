@@ -128,7 +128,8 @@ add_library(
   cmCLocaleEnvironmentScope.cxx
   cmCMakePath.h
   cmCMakePath.cxx
-  cmCMakePresetErrors.h
+  cmCMakePresetsErrors.cxx
+  cmCMakePresetsErrors.h
   cmCMakePresetsGraph.cxx
   cmCMakePresetsGraph.h
   cmCMakePresetsGraphInternal.h
@@ -170,6 +171,8 @@ add_library(
   cmCustomCommandTypes.h
   cmCxxModuleMapper.cxx
   cmCxxModuleMapper.h
+  cmCxxModuleUsageEffects.cxx
+  cmCxxModuleUsageEffects.h
   cmDefinitions.cxx
   cmDefinitions.h
   cmDependencyProvider.h
@@ -298,6 +301,8 @@ add_library(
   cmGraphAdjacencyList.h
   cmGraphVizWriter.cxx
   cmGraphVizWriter.h
+  cmImportedCxxModuleInfo.cxx
+  cmImportedCxxModuleInfo.h
   cmInstallGenerator.h
   cmInstallGenerator.cxx
   cmInstallGetRuntimeDependenciesGenerator.h
@@ -323,6 +328,7 @@ add_library(
   cmInstallTargetGenerator.cxx
   cmInstallDirectoryGenerator.h
   cmInstallDirectoryGenerator.cxx
+  cmJSONHelpers.cxx
   cmJSONHelpers.h
   cmJSONState.cxx
   cmJSONState.h
@@ -371,6 +377,8 @@ add_library(
   cmNewLineStyle.cxx
   cmOrderDirectories.cxx
   cmOrderDirectories.h
+  cmPlistParser.cxx
+  cmPlistParser.h
   cmPolicies.h
   cmPolicies.cxx
   cmProcessOutput.cxx
@@ -420,6 +428,7 @@ add_library(
   cmStateTypes.h
   cmStringAlgorithms.cxx
   cmStringAlgorithms.h
+  cmSyntheticTargetCache.h
   cmSystemTools.cxx
   cmSystemTools.h
   cmTarget.cxx
@@ -451,6 +460,8 @@ add_library(
   cmWorkerPool.h
   cmWorkingDirectory.cxx
   cmWorkingDirectory.h
+  cmXcFramework.cxx
+  cmXcFramework.h
   cmXMLParser.cxx
   cmXMLParser.h
   cmXMLSafe.cxx
@@ -734,6 +745,8 @@ add_library(
   cm_utf8.c
   cm_codecvt.hxx
   cm_codecvt.cxx
+  cm_fileno.hxx
+  cm_fileno.cxx
 
   cmDuration.h
   cmDuration.cxx
@@ -775,8 +788,6 @@ if(CMake_ENABLE_DEBUGGER)
       cmDebuggerBreakpointManager.h
       cmDebuggerExceptionManager.cxx
       cmDebuggerExceptionManager.h
-      cmDebuggerPipeConnection.cxx
-      cmDebuggerPipeConnection.h
       cmDebuggerProtocol.cxx
       cmDebuggerProtocol.h
       cmDebuggerSourceBreakpoint.cxx
@@ -794,6 +805,21 @@ if(CMake_ENABLE_DEBUGGER)
       cmDebuggerVariablesManager.cxx
       cmDebuggerVariablesManager.h
     )
+  if(WIN32)
+    target_sources(
+    CMakeLib
+    PRIVATE
+      cmDebuggerWindowsPipeConnection.cxx
+      cmDebuggerWindowsPipeConnection.h
+    )
+  else()
+    target_sources(
+    CMakeLib
+    PRIVATE
+      cmDebuggerPosixPipeConnection.cxx
+      cmDebuggerPosixPipeConnection.h
+    )
+  endif()
   target_link_libraries(CMakeLib PUBLIC cppdap::cppdap)
 endif()
 
@@ -945,7 +971,6 @@ if(CMake_BUILD_PCH)
     "$<$<COMPILE_LANGUAGE:CXX>:cmArgumentParser.h>"
     "$<$<COMPILE_LANGUAGE:CXX>:cmake.h>"
     "$<$<COMPILE_LANGUAGE:CXX>:cmCMakePath.h>"
-    "$<$<COMPILE_LANGUAGE:CXX>:cmDebuggerPipeConnection.h>"
     "$<$<COMPILE_LANGUAGE:CXX>:cmCurl.h>")
 
     set_source_files_properties(
@@ -977,13 +1002,9 @@ if(WIN32 AND NOT CYGWIN)
   list(APPEND _tools cmcldeps)
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "sparc")
-  # the atomic instructions are implemented using libatomic on some platforms,
-  # so linking to that may be required
-  check_library_exists(atomic __atomic_fetch_add_4 "" LIBATOMIC_NEEDED)
-  if(LIBATOMIC_NEEDED)
-    target_link_libraries(CMakeLib PUBLIC atomic)
-  endif()
+# Some atomic instructions are implemented using libatomic on some platforms.
+if(CMake_HAVE_CXX_ATOMIC_LIB)
+  target_link_libraries(CMakeLib PUBLIC atomic)
 endif()
 
 # On Apple we need CoreFoundation and CoreServices

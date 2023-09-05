@@ -22,7 +22,6 @@
 #include "cmsys/Status.hxx"      // IWYU pragma: export
 #include "cmsys/SystemTools.hxx" // IWYU pragma: export
 
-#include "cmCryptoHash.h"
 #include "cmDuration.h"
 #include "cmProcessOutput.h"
 
@@ -110,6 +109,9 @@ public:
 
   //! Return true if the path is a framework
   static bool IsPathToFramework(const std::string& path);
+
+  //! Return true if the path is a xcframework
+  static bool IsPathToXcFramework(const std::string& path);
 
   //! Return true if the path is a macOS non-framework shared library (aka
   //! .dylib)
@@ -211,20 +213,6 @@ public:
   static void MoveFileIfDifferent(const std::string& source,
                                   const std::string& destination);
 
-#ifndef CMAKE_BOOTSTRAP
-  //! Compute the hash of a file
-  static std::string ComputeFileHash(const std::string& source,
-                                     cmCryptoHash::Algo algo);
-
-  /** Compute the md5sum of a string.  */
-  static std::string ComputeStringMD5(const std::string& input);
-
-#  ifdef _WIN32
-  //! Get the SHA thumbprint for a certificate file
-  static std::string ComputeCertificateThumbprint(const std::string& source);
-#  endif
-#endif
-
   /**
    * Run a single executable command
    *
@@ -302,7 +290,7 @@ public:
     std::vector<std::string>::const_iterator argBeg,
     std::vector<std::string>::const_iterator argEnd);
 
-  static size_t CalculateCommandLineLengthLimit();
+  static std::size_t CalculateCommandLineLengthLimit();
 
   static void DisableRunCommandOutput() { s_DisableRunCommandOutput = true; }
   static void EnableRunCommandOutput() { s_DisableRunCommandOutput = false; }
