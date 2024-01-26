@@ -694,7 +694,22 @@ void cmGlobalGenerator::EnableLanguage(
     std::string includes =
       mf->GetSafeDefinition("CMAKE_PROJECT_TOP_LEVEL_INCLUDES");
     cmList includesList{ includes };
-    for (std::string const& setupFile : includesList) {
+    for (std::string setupFile : includesList) {
+      // Any relative path without a .cmake extension is checked for valid
+      // cmake modules. This logic should be consistent with CMake's include()
+      // command. Otherwise default to checking relative path w.r.t. source
+      // directory
+      if (!cmSystemTools::FileIsFullPath(setupFile) &&
+          !cmHasLiteralSuffix(setupFile, ".cmake")) {
+        std::string mfile = mf->GetModulesFile(cmStrCat(setupFile, ".cmake"));
+        if (mfile.empty()) {
+          cmSystemTools::Error(cmStrCat(
+            "CMAKE_PROJECT_TOP_LEVEL_INCLUDES module:\n  ", setupFile));
+          mf->GetState()->SetInTopLevelIncludes(false);
+          return;
+        }
+        setupFile = mfile;
+      }
       std::string absSetupFile = cmSystemTools::CollapseFullPath(
         setupFile, mf->GetCurrentSourceDirectory());
       if (!cmSystemTools::FileExists(absSetupFile)) {
@@ -859,7 +874,11 @@ void cmGlobalGenerator::EnableLanguage(
         noCompiler <<
           "The " << compilerName << ":\n"
           "  " << *compilerFile << "\n"
-          "is not a full path and was not found in the PATH.\n"
+          "is not a full path and was not found in the PATH."
+#ifdef _WIN32
+          "  Perhaps the extension is missing?"
+#endif
+          "\n"
           ;
         /* clang-format on */
       } else if (!cmSystemTools::FileExists(*compilerFile)) {
@@ -1139,20 +1158,26 @@ std::string cmGlobalGenerator::GetLanguageOutputExtension(
 {
   const std::string& lang = source.GetLanguage();
   if (!lang.empty()) {
-    auto const it = this->LanguageToOutputExtension.find(lang);
-    if (it != this->LanguageToOutputExtension.end()) {
-      return it->second;
+    return this->GetLanguageOutputExtension(lang);
+  }
+  // if no language is found then check to see if it is already an
+  // output extension for some language.  In that case it should be ignored
+  // and in this map, so it will not be compiled but will just be used.
+  std::string const& ext = source.GetExtension();
+  if (!ext.empty()) {
+    if (this->OutputExtensions.count(ext)) {
+      return ext;
     }
-  } else {
-    // if no language is found then check to see if it is already an
-    // output extension for some language.  In that case it should be ignored
-    // and in this map, so it will not be compiled but will just be used.
-    std::string const& ext = source.GetExtension();
-    if (!ext.empty()) {
-      if (this->OutputExtensions.count(ext)) {
-        return ext;
-      }
-    }
+  }
+  return "";
+}
+
+std::string cmGlobalGenerator::GetLanguageOutputExtension(
+  std::string const& lang) const
+{
+  auto const it = this->LanguageToOutputExtension.find(lang);
+  if (it != this->LanguageToOutputExtension.end()) {
+    return it->second;
   }
   return "";
 }
@@ -1587,6 +1612,13 @@ bool cmGlobalGenerator::Compute()
     }
   }
 
+  // Add unity sources after computing compile features.  Unity sources do
+  // not change the set of languages or features, but we need to know them
+  // to filter out sources that are scanned for C++ module dependencies.
+  if (!this->AddUnitySources()) {
+    return false;
+  }
+
   for (const auto& localGen : this->LocalGenerators) {
     cmMakefile* mf = localGen->GetMakefile();
     for (const auto& g : mf->GetInstallGenerators()) {
@@ -1863,9 +1895,8 @@ bool cmGlobalGenerator::AddAutomaticSources()
       if (!gt->CanCompileSources()) {
         continue;
       }
-      lg->AddUnityBuild(gt.get());
       lg->AddISPCDependencies(gt.get());
-      // Targets that re-use a PCH are handled below.
+      // Targets that reuse a PCH are handled below.
       if (!gt->GetProperty("PRECOMPILE_HEADERS_REUSE_FROM")) {
         lg->AddPchDependencies(gt.get());
       }
@@ -1877,13 +1908,35 @@ bool cmGlobalGenerator::AddAutomaticSources()
       if (!gt->CanCompileSources()) {
         continue;
       }
-      // Handle targets that re-use a PCH from an above-handled target.
+      // Handle targets that reuse a PCH from an above-handled target.
       if (gt->GetProperty("PRECOMPILE_HEADERS_REUSE_FROM")) {
         lg->AddPchDependencies(gt.get());
       }
     }
   }
   // The above transformations may have changed the classification of sources.
+  // Clear the source list and classification cache (KindedSources) of all
+  // targets so that it will be recomputed correctly by the generators later
+  // now that the above transformations are done for all targets.
+  for (const auto& lg : this->LocalGenerators) {
+    for (const auto& gt : lg->GetGeneratorTargets()) {
+      gt->ClearSourcesCache();
+    }
+  }
+  return true;
+}
+
+bool cmGlobalGenerator::AddUnitySources()
+{
+  for (const auto& lg : this->LocalGenerators) {
+    for (const auto& gt : lg->GetGeneratorTargets()) {
+      if (!gt->CanCompileSources()) {
+        continue;
+      }
+      lg->AddUnityBuild(gt.get());
+    }
+  }
+  // The above transformation may have changed the classification of sources.
   // Clear the source list and classification cache (KindedSources) of all
   // targets so that it will be recomputed correctly by the generators later
   // now that the above transformations are done for all targets.
@@ -1999,6 +2052,8 @@ void cmGlobalGenerator::ClearGeneratorMembers()
   this->DirectoryContentMap.clear();
   this->BinaryDirectories.clear();
   this->GeneratedFiles.clear();
+  this->RuntimeDependencySets.clear();
+  this->RuntimeDependencySetsByName.clear();
 }
 
 void cmGlobalGenerator::ComputeTargetObjectDirectory(
@@ -2690,13 +2745,9 @@ cmGlobalGenerator::SplitFrameworkPath(const std::string& path,
   return cm::nullopt;
 }
 
-bool cmGlobalGenerator::CheckCMP0037(std::string const& targetName,
-                                     std::string const& reason) const
+static bool RaiseCMP0037Message(cmake* cm, cmTarget* tgt,
+                                std::string const& reason)
 {
-  cmTarget* tgt = this->FindTarget(targetName);
-  if (!tgt) {
-    return true;
-  }
   MessageType messageType = MessageType::AUTHOR_WARNING;
   std::ostringstream e;
   bool issueMessage = false;
@@ -2715,18 +2766,27 @@ bool cmGlobalGenerator::CheckCMP0037(std::string const& targetName,
       break;
   }
   if (issueMessage) {
-    e << "The target name \"" << targetName << "\" is reserved " << reason
+    e << "The target name \"" << tgt->GetName() << "\" is reserved " << reason
       << ".";
     if (messageType == MessageType::AUTHOR_WARNING) {
       e << "  It may result in undefined behavior.";
     }
-    this->GetCMakeInstance()->IssueMessage(messageType, e.str(),
-                                           tgt->GetBacktrace());
+    cm->IssueMessage(messageType, e.str(), tgt->GetBacktrace());
     if (messageType == MessageType::FATAL_ERROR) {
       return false;
     }
   }
   return true;
+}
+
+bool cmGlobalGenerator::CheckCMP0037(std::string const& targetName,
+                                     std::string const& reason) const
+{
+  cmTarget* tgt = this->FindTarget(targetName);
+  if (!tgt) {
+    return true;
+  }
+  return RaiseCMP0037Message(this->GetCMakeInstance(), tgt, reason);
 }
 
 void cmGlobalGenerator::CreateDefaultGlobalTargets(
@@ -2841,6 +2901,14 @@ void cmGlobalGenerator::AddGlobalTarget_Test(
   gti.Name = this->GetTestTargetName();
   gti.Message = "Running tests...";
   gti.UsesTerminal = true;
+  // Unlike the 'install' target, the 'test' target does not depend on 'all'
+  // by default.  Enable it only if CMAKE_SKIP_TEST_ALL_DEPENDENCY is
+  // explicitly set to OFF.
+  if (cmValue noall = mf->GetDefinition("CMAKE_SKIP_TEST_ALL_DEPENDENCY")) {
+    if (cmIsOff(noall)) {
+      gti.Depends.emplace_back(this->GetAllTargetName());
+    }
+  }
   cmCustomCommandLine singleLine;
   singleLine.push_back(cmSystemTools::GetCTestCommand());
   singleLine.push_back("--force-new-ctest-process");
@@ -3142,10 +3210,11 @@ bool cmGlobalGenerator::IsReservedTarget(std::string const& name)
   // by one or more of the cmake generators.
 
   // Adding additional targets to this list will require a policy!
-  const char* reservedTargets[] = { "all",       "ALL_BUILD",  "help",
-                                    "install",   "INSTALL",    "preinstall",
-                                    "clean",     "edit_cache", "rebuild_cache",
-                                    "ZERO_CHECK" };
+  static const cm::static_string_view reservedTargets[] = {
+    "all"_s,           "ALL_BUILD"_s,  "help"_s,  "install"_s,
+    "INSTALL"_s,       "preinstall"_s, "clean"_s, "edit_cache"_s,
+    "rebuild_cache"_s, "ZERO_CHECK"_s
+  };
 
   return cm::contains(reservedTargets, name);
 }

@@ -3,6 +3,10 @@
 # Common build directories
 /build*/
 
+# CI jobs that run in symlinked trees produce these artifacts.
+/real_work/
+/work
+
 # MacOS Finder files.
 .DS_Store
 
@@ -28,3 +32,6 @@
 /.vs/
 # Visual Studio build directory
 /out/
+
+# clang-tidy output
+/clang-tidy-fixes.patch

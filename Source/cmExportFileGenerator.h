@@ -15,6 +15,7 @@
 #include "cmVersion.h"
 #include "cmVersionConfig.h"
 
+class cmExportSet;
 class cmFileSet;
 class cmGeneratorTarget;
 class cmLocalGenerator;
@@ -61,6 +62,11 @@ public:
       error.  */
   bool GenerateImportFile();
 
+  void SetExportPackageDependencies(bool exportPackageDependencies)
+  {
+    this->ExportPackageDependencies = exportPackageDependencies;
+  }
+
 protected:
   using ImportPropertyMap = std::map<std::string, std::string>;
 
@@ -78,16 +84,18 @@ protected:
   virtual void GenerateImportTargetCode(std::ostream& os,
                                         cmGeneratorTarget const* target,
                                         cmStateEnums::TargetType targetType);
-  virtual void GenerateImportPropertyCode(std::ostream& os,
-                                          const std::string& config,
-                                          cmGeneratorTarget const* target,
-                                          ImportPropertyMap const& properties);
+  virtual void GenerateImportPropertyCode(
+    std::ostream& os, const std::string& config, const std::string& suffix,
+    cmGeneratorTarget const* target, ImportPropertyMap const& properties,
+    const std::string& importedXcFrameworkLocation);
   virtual void GenerateImportedFileChecksCode(
     std::ostream& os, cmGeneratorTarget* target,
     ImportPropertyMap const& properties,
-    const std::set<std::string>& importedLocations);
+    const std::set<std::string>& importedLocations,
+    const std::string& importedXcFrameworkLocation);
   virtual void GenerateImportedFileCheckLoop(std::ostream& os);
   virtual void GenerateMissingTargetsCheckCode(std::ostream& os);
+  virtual void GenerateFindDependencyCalls(std::ostream& os);
 
   virtual void GenerateExpectedTargetsCode(std::ostream& os,
                                            const std::string& expectedTargets);
@@ -143,7 +151,8 @@ protected:
   void PopulateIncludeDirectoriesInterface(
     cmGeneratorTarget const* target,
     cmGeneratorExpression::PreprocessContext preprocessRule,
-    ImportPropertyMap& properties, cmTargetExport const& te);
+    ImportPropertyMap& properties, cmTargetExport const& te,
+    std::string& includesDestinationDirs);
   void PopulateSourcesInterface(
     cmGeneratorTarget const* target,
     cmGeneratorExpression::PreprocessContext preprocessRule,
@@ -172,12 +181,10 @@ protected:
     std::string& input, cmGeneratorTarget const* target,
     FreeTargetsReplace replace = NoReplaceFreeTargets);
 
-  virtual void GenerateRequiredCMakeVersion(std::ostream& os,
-                                            const char* versionString);
-
   bool PopulateCxxModuleExportProperties(
     cmGeneratorTarget const* gte, ImportPropertyMap& properties,
-    cmGeneratorExpression::PreprocessContext ctx, std::string& errorMessage);
+    cmGeneratorExpression::PreprocessContext ctx,
+    std::string const& includesDestinationDirs, std::string& errorMessage);
   bool PopulateExportProperties(cmGeneratorTarget const* gte,
                                 ImportPropertyMap& properties,
                                 std::string& errorMessage);
@@ -185,7 +192,7 @@ protected:
   void GenerateTargetFileSets(cmGeneratorTarget* gte, std::ostream& os,
                               cmTargetExport* te = nullptr);
 
-  void GenerateCxxModuleInformation(std::ostream& os);
+  void GenerateCxxModuleInformation(std::string const& name, std::ostream& os);
 
   virtual std::string GetFileSetDirectories(cmGeneratorTarget* gte,
                                             cmFileSet* fileSet,
@@ -193,6 +200,11 @@ protected:
   virtual std::string GetFileSetFiles(cmGeneratorTarget* gte,
                                       cmFileSet* fileSet,
                                       cmTargetExport* te) = 0;
+
+  virtual cmExportSet* GetExportSet() const { return nullptr; }
+
+  void SetRequiredCMakeVersion(unsigned int major, unsigned int minor,
+                               unsigned int patch);
 
   // The namespace in which the exports are placed in the generated file.
   std::string Namespace;
@@ -214,6 +226,14 @@ protected:
 
   std::vector<std::string> MissingTargets;
 
+  std::set<cmGeneratorTarget const*> ExternalTargets;
+
+  unsigned int RequiredCMakeVersionMajor = 2;
+  unsigned int RequiredCMakeVersionMinor = 8;
+  unsigned int RequiredCMakeVersionPatch = 3;
+
+  bool ExportPackageDependencies = false;
+
 private:
   void PopulateInterfaceProperty(const std::string&, const std::string&,
                                  cmGeneratorTarget const* target,
@@ -233,5 +253,6 @@ private:
                                      const std::string& config) = 0;
 
   virtual std::string GetCxxModulesDirectory() const = 0;
-  virtual void GenerateCxxModuleConfigInformation(std::ostream& os) const = 0;
+  virtual void GenerateCxxModuleConfigInformation(std::string const&,
+                                                  std::ostream& os) const = 0;
 };

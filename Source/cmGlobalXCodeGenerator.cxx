@@ -407,8 +407,10 @@ bool cmGlobalXCodeGenerator::ProcessGeneratorToolsetField(
       mf->IssueMessage(MessageType::FATAL_ERROR, e);
       return false;
     }
-    if (this->XcodeBuildSystem == BuildSystem::Twelve &&
-        this->XcodeVersion < 120) {
+    if ((this->XcodeBuildSystem == BuildSystem::Twelve &&
+         this->XcodeVersion < 120) ||
+        (this->XcodeBuildSystem == BuildSystem::One &&
+         this->XcodeVersion >= 140)) {
       /* clang-format off */
       std::string const& e = cmStrCat(
         "Generator\n"
@@ -1382,14 +1384,6 @@ bool cmGlobalXCodeGenerator::CreateXCodeTarget(
     gtgt->CheckCxxModuleStatus(configName);
   }
 
-  if (gtgt->HaveCxx20ModuleSources()) {
-    gtgt->Makefile->IssueMessage(
-      MessageType::FATAL_ERROR,
-      cmStrCat("The target named \"", gtgt->GetName(),
-               "\" contains C++ sources that export modules which is not "
-               "supported by the generator"));
-  }
-
   auto& gtgt_visited = this->CommandsVisited[gtgt];
   auto const& deps = this->GetTargetDirectDepends(gtgt);
   for (auto const& d : deps) {
@@ -1703,6 +1697,7 @@ void cmGlobalXCodeGenerator::ForceLinkerLanguage(cmGeneratorTarget* gtgt)
   }
   if (cmSourceFile* sf = mf->GetOrCreateSource(fname)) {
     sf->SetProperty("LANGUAGE", llang);
+    sf->SetProperty("CXX_SCAN_FOR_MODULES", "0");
     gtgt->AddSource(fname);
   }
 }
@@ -2485,6 +2480,25 @@ void cmGlobalXCodeGenerator::CreateBuildSettings(cmGeneratorTarget* gtgt,
       buildSettings->AddAttribute("SWIFT_ACTIVE_COMPILATION_CONDITIONS",
                                   swiftDefs.CreateList());
     }
+
+    if (cm::optional<cmSwiftCompileMode> swiftCompileMode =
+          this->CurrentLocalGenerator->GetSwiftCompileMode(gtgt, configName)) {
+      switch (*swiftCompileMode) {
+        case cmSwiftCompileMode::Wholemodule:
+          buildSettings->AddAttribute("SWIFT_COMPILATION_MODE",
+                                      this->CreateString("wholemodule"));
+          break;
+        case cmSwiftCompileMode::Incremental:
+        case cmSwiftCompileMode::Singlefile:
+          break;
+        case cmSwiftCompileMode::Unknown:
+          this->CurrentLocalGenerator->IssueMessage(
+            MessageType::AUTHOR_WARNING,
+            cmStrCat("Unknown Swift_COMPILATION_MODE on target '",
+                     gtgt->GetName(), "'"));
+          break;
+      }
+    }
   }
 
   std::string extraLinkOptionsVar;
@@ -2506,6 +2520,9 @@ void cmGlobalXCodeGenerator::CreateBuildSettings(cmGeneratorTarget* gtgt,
     this->CurrentLocalGenerator->GetStaticLibraryFlags(
       extraLinkOptions, configName, llang, gtgt);
   } else {
+    this->CurrentLocalGenerator->AppendLinkerTypeFlags(extraLinkOptions, gtgt,
+                                                       configName, llang);
+
     cmValue targetLinkFlags = gtgt->GetProperty("LINK_FLAGS");
     if (targetLinkFlags) {
       this->CurrentLocalGenerator->AppendFlags(extraLinkOptions,
@@ -3860,15 +3877,81 @@ void cmGlobalXCodeGenerator::AddDependAndLinkInformation(cmXCodeObject* target)
         configName);
     }
 
-    // Skip link information for object libraries.
-    if (gt->GetType() == cmStateEnums::OBJECT_LIBRARY ||
-        gt->GetType() == cmStateEnums::STATIC_LIBRARY) {
-      continue;
-    }
-
     // Compute the link library and directory information.
     cmComputeLinkInformation* cli = gt->GetLinkInformation(configName);
     if (!cli) {
+      continue;
+    }
+
+    // add .xcframework include paths
+    {
+      // Keep track of framework search paths we've already added or that are
+      // part of the set of implicit search paths. We don't want to repeat
+      // them and we also need to avoid hard-coding any SDK-specific paths.
+      // This is essential for getting device-and-simulator builds to work,
+      // otherwise we end up hard-coding a path to the wrong SDK for
+      // SDK-provided frameworks that are added by their full path.
+      std::set<std::string> emitted(cli->GetFrameworkPathsEmitted());
+      BuildObjectListOrString includePaths(this, true);
+      BuildObjectListOrString fwSearchPaths(this, true);
+      for (auto const& libItem : configItemMap[configName]) {
+        auto const& libName = *libItem;
+        if (libName.IsPath == cmComputeLinkInformation::ItemIsPath::Yes) {
+          auto cleanPath = libName.Value.Value;
+          if (cmSystemTools::FileIsFullPath(cleanPath)) {
+            cleanPath = cmSystemTools::CollapseFullPath(cleanPath);
+          }
+          bool isXcFramework =
+            cmHasSuffix(libName.GetFeatureName(), "XCFRAMEWORK"_s);
+          if (isXcFramework) {
+            auto plist = cmParseXcFrameworkPlist(
+              cleanPath, *this->Makefiles.front(), libName.Value.Backtrace);
+            if (!plist) {
+              return;
+            }
+            if (auto const* library = plist->SelectSuitableLibrary(
+                  *this->Makefiles.front(), libName.Value.Backtrace)) {
+              auto libraryPath =
+                cmStrCat(cleanPath, '/', library->LibraryIdentifier, '/',
+                         library->LibraryPath);
+              if (auto const fwDescriptor = this->SplitFrameworkPath(
+                    libraryPath,
+                    cmGlobalGenerator::FrameworkFormat::Relaxed)) {
+                if (!fwDescriptor->Directory.empty() &&
+                    emitted.insert(fwDescriptor->Directory).second) {
+                  // This is a search path we had not added before and it
+                  // isn't an implicit search path, so we need it
+                  fwSearchPaths.Add(
+                    this->XCodeEscapePath(fwDescriptor->Directory));
+                }
+              } else {
+                if (!library->HeadersPath.empty()) {
+                  includePaths.Add(this->XCodeEscapePath(
+                    cmStrCat(cleanPath, '/', library->LibraryIdentifier, '/',
+                             library->HeadersPath)));
+                }
+              }
+            } else {
+              return;
+            }
+          }
+        }
+      }
+      if (!includePaths.IsEmpty()) {
+        this->AppendBuildSettingAttribute(target, "HEADER_SEARCH_PATHS",
+                                          includePaths.CreateList(),
+                                          configName);
+      }
+      if (!fwSearchPaths.IsEmpty()) {
+        this->AppendBuildSettingAttribute(target, "FRAMEWORK_SEARCH_PATHS",
+                                          fwSearchPaths.CreateList(),
+                                          configName);
+      }
+    }
+
+    // Skip link information for object libraries.
+    if (gt->GetType() == cmStateEnums::OBJECT_LIBRARY ||
+        gt->GetType() == cmStateEnums::STATIC_LIBRARY) {
       continue;
     }
 
@@ -3978,13 +4061,6 @@ void cmGlobalXCodeGenerator::AddDependAndLinkInformation(cmXCodeObject* target)
               if (auto const fwDescriptor = this->SplitFrameworkPath(
                     libraryPath,
                     cmGlobalGenerator::FrameworkFormat::Relaxed)) {
-                if (!fwDescriptor->Directory.empty() &&
-                    emitted.insert(fwDescriptor->Directory).second) {
-                  // This is a search path we had not added before and it
-                  // isn't an implicit search path, so we need it
-                  fwSearchPaths.Add(
-                    this->XCodeEscapePath(fwDescriptor->Directory));
-                }
                 libPaths.Add(cmStrCat(
                   "-framework ",
                   this->XCodeEscapePath(fwDescriptor->GetLinkName())));
@@ -3992,14 +4068,6 @@ void cmGlobalXCodeGenerator::AddDependAndLinkInformation(cmXCodeObject* target)
                 libPaths.Add(
                   libName.GetFormattedItem(this->XCodeEscapePath(libraryPath))
                     .Value);
-                if (!library->HeadersPath.empty()) {
-                  this->AppendBuildSettingAttribute(
-                    target, "HEADER_SEARCH_PATHS",
-                    this->CreateString(this->XCodeEscapePath(
-                      cmStrCat(cleanPath, '/', library->LibraryIdentifier, '/',
-                               library->HeadersPath))),
-                    configName);
-                }
               }
             } else {
               return;
@@ -4228,9 +4296,17 @@ void cmGlobalXCodeGenerator::AddEmbeddedResources(cmXCodeObject* target)
 {
   static const auto dstSubfolderSpec = "7";
 
-  this->AddEmbeddedObjects(target, "Embed Resources",
-                           "XCODE_EMBED_RESOURCES_PATH", dstSubfolderSpec,
-                           NoActionOnCopyByDefault);
+  this->AddEmbeddedObjects(target, "Embed Resources", "XCODE_EMBED_RESOURCES",
+                           dstSubfolderSpec, NoActionOnCopyByDefault);
+}
+
+void cmGlobalXCodeGenerator::AddEmbeddedXPCServices(cmXCodeObject* target)
+{
+  static const auto dstSubfolderSpec = "16";
+
+  this->AddEmbeddedObjects(
+    target, "Embed XPC Services", "XCODE_EMBED_XPC_SERVICES", dstSubfolderSpec,
+    NoActionOnCopyByDefault, "$(CONTENTS_FOLDER_PATH)/XPCServices");
 }
 
 bool cmGlobalXCodeGenerator::CreateGroups(
@@ -4562,6 +4638,10 @@ bool cmGlobalXCodeGenerator::CreateXCodeObjects(
     buildSettings->AddAttribute("CODE_SIGNING_ALLOWED",
                                 this->CreateString("NO"));
   }
+
+  // This code supports the OLD behavior of CMP0157. We should be able to
+  // remove computing the debug configuration set once the old behavior is
+  // removed.
   auto debugConfigs = this->GetCMakeInstance()->GetDebugConfigs();
   std::set<std::string> debugConfigSet(debugConfigs.begin(),
                                        debugConfigs.end());
@@ -4571,9 +4651,16 @@ bool cmGlobalXCodeGenerator::CreateXCodeObjects(
 
     cmXCodeObject* buildSettingsForCfg = this->CreateFlatClone(buildSettings);
 
-    if (debugConfigSet.count(cmSystemTools::UpperCase(config.first)) == 0) {
-      buildSettingsForCfg->AddAttribute("SWIFT_COMPILATION_MODE",
-                                        this->CreateString("wholemodule"));
+    // Supports the OLD behavior of CMP0157. CMP0157 OLD behavior globally set
+    // wholemodule compilation for all non-debug configurations, for all
+    // targets.
+    if (this->CurrentMakefile
+          ->GetDefinition("CMAKE_Swift_COMPILATION_MODE_DEFAULT")
+          .IsEmpty()) {
+      if (debugConfigSet.count(cmSystemTools::UpperCase(config.first)) == 0) {
+        buildSettingsForCfg->AddAttribute("SWIFT_COMPILATION_MODE",
+                                          this->CreateString("wholemodule"));
+      }
     }
 
     // Put this last so it can override existing settings
@@ -4635,6 +4722,7 @@ bool cmGlobalXCodeGenerator::CreateXCodeObjects(
     this->AddEmbeddedAppExtensions(t);
     this->AddEmbeddedExtensionKitExtensions(t);
     this->AddEmbeddedResources(t);
+    this->AddEmbeddedXPCServices(t);
     // Inherit project-wide values for any target-specific search paths.
     this->InheritBuildSettingAttribute(t, "HEADER_SEARCH_PATHS");
     this->InheritBuildSettingAttribute(t, "SYSTEM_HEADER_SEARCH_PATHS");

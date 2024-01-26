@@ -22,6 +22,7 @@ class cmGeneratorTarget;
 class cmGlobalGenerator;
 class cmMakefile;
 class cmOrderDirectories;
+class cmSourceFile;
 class cmake;
 
 /** \class cmComputeLinkInformation
@@ -51,16 +52,21 @@ public:
   {
     Item(BT<std::string> v, ItemIsPath isPath,
          cmGeneratorTarget const* target = nullptr,
+         cmSourceFile const* objectSource = nullptr,
          FeatureDescriptor const* feature = nullptr)
       : Value(std::move(v))
       , IsPath(isPath)
       , Target(target)
+      , ObjectSource(objectSource)
       , Feature(feature)
     {
     }
     BT<std::string> Value;
     ItemIsPath IsPath = ItemIsPath::No;
     cmGeneratorTarget const* Target = nullptr;
+    // The source file representing the external object (used when linking
+    // `$<TARGET_OBJECTS>`)
+    cmSourceFile const* ObjectSource = nullptr;
 
     bool HasFeature() const { return this->Feature != nullptr; }
     const std::string& GetFeatureName() const
@@ -97,6 +103,8 @@ public:
   std::string GetRPathString(bool for_install) const;
   std::string GetChrpathString() const;
   std::set<cmGeneratorTarget const*> const& GetSharedLibrariesLinked() const;
+  std::vector<cmGeneratorTarget const*> const& GetExternalObjectTargets()
+    const;
   std::vector<cmGeneratorTarget const*> const& GetRuntimeDLLs() const
   {
     return this->RuntimeDLLs;
@@ -134,6 +142,7 @@ private:
   std::vector<std::string> XcFrameworkHeaderPaths;
   std::vector<std::string> RuntimeSearchPath;
   std::set<cmGeneratorTarget const*> SharedLibrariesLinked;
+  std::vector<cmGeneratorTarget const*> ExternalObjectTargets;
   std::vector<cmGeneratorTarget const*> RuntimeDLLs;
 
   // Context information.
@@ -221,6 +230,8 @@ private:
   bool FinishLinkerSearchDirectories();
   void PrintLinkPolicyDiagnosis(std::ostream&);
 
+  void AddExternalObjectTargets();
+
   // Implicit link libraries and directories for linker language.
   void LoadImplicitLinkInfo();
   void AddImplicitLinkInfo();
@@ -243,7 +254,7 @@ private:
   std::unique_ptr<cmOrderDirectories> OrderRuntimeSearchPath;
 
   bool OldLinkDirMode;
-  bool OpenBSD;
+  bool IsOpenBSD;
   bool LinkDependsNoShared;
   bool RuntimeUseChrpath;
   bool NoSONameUsesPath;

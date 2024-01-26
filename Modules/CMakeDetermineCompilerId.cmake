@@ -174,6 +174,35 @@ function(CMAKE_DETERMINE_COMPILER_ID lang flagvar src)
     endif()
   endif()
 
+  if("x${lang}" STREQUAL "xFortran" AND "x${CMAKE_${lang}_COMPILER_ID}" STREQUAL "xLLVMFlang")
+    # Parse the target triple to detect information not always available from the preprocessor.
+    if(COMPILER_${lang}_PRODUCED_OUTPUT MATCHES "-triple ([0-9a-z_]*)-.*windows-msvc([0-9]+)\\.([0-9]+)")
+      # CMakeFortranCompilerId.F.in does not extract the _MSC_VER minor version.
+      # We can do better using the version parsed here.
+      set(CMAKE_${lang}_SIMULATE_VERSION "${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
+
+      if (CMAKE_${lang}_COMPILER_VERSION VERSION_LESS 18.0)
+        # LLVMFlang < 18.0 does not provide predefines identifying the MSVC ABI or architecture.
+        set(CMAKE_${lang}_SIMULATE_ID "MSVC")
+        set(arch ${CMAKE_MATCH_1})
+        if(arch STREQUAL "x86_64")
+          set(CMAKE_${lang}_COMPILER_ARCHITECTURE_ID "x64")
+        elseif(arch STREQUAL "aarch64")
+          set(CMAKE_${lang}_COMPILER_ARCHITECTURE_ID "ARM64")
+        elseif(arch STREQUAL "arm64ec")
+          set(CMAKE_${lang}_COMPILER_ARCHITECTURE_ID "ARM64EC")
+        elseif(arch MATCHES "^i[3-9]86$")
+          set(CMAKE_${lang}_COMPILER_ARCHITECTURE_ID "X86")
+        else()
+          message(FATAL_ERROR "LLVMFlang target architecture unrecognized: ${arch}")
+        endif()
+        set(MSVC_${lang}_ARCHITECTURE_ID "${CMAKE_${lang}_COMPILER_ARCHITECTURE_ID}")
+      endif()
+    elseif(COMPILER_${lang}_PRODUCED_OUTPUT MATCHES "-triple ([0-9a-z_]*)-.*windows-gnu")
+      set(CMAKE_${lang}_SIMULATE_ID "GNU")
+    endif()
+  endif()
+
   if (COMPILER_QNXNTO AND (CMAKE_${lang}_COMPILER_ID STREQUAL "GNU" OR CMAKE_${lang}_COMPILER_ID STREQUAL "LCC"))
     execute_process(
       COMMAND "${CMAKE_${lang}_COMPILER}"
@@ -376,7 +405,13 @@ Id flags: ${testflags} ${CMAKE_${lang}_COMPILER_ID_FLAGS_ALWAYS}
     elseif(lang STREQUAL Fortran)
       set(v Intel)
       set(ext vfproj)
-      set(id_cl ifort.exe)
+      if(CMAKE_VS_PLATFORM_TOOLSET_FORTRAN)
+        set(id_cl "${CMAKE_VS_PLATFORM_TOOLSET_FORTRAN}.exe")
+        set(id_UseCompiler "UseCompiler=\"${CMAKE_VS_PLATFORM_TOOLSET_FORTRAN}Compiler\"")
+      else()
+        set(id_cl ifort.exe)
+        set(id_UseCompiler "")
+      endif()
     elseif(lang STREQUAL CSharp)
       set(v 10)
       set(ext csproj)

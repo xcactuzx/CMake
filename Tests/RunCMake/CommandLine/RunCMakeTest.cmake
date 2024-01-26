@@ -782,6 +782,8 @@ run_cmake_command(E_cat-without-double-dash ${CMAKE_COMMAND} -E cat "-file-start
 unset(RunCMake_TEST_COMMAND_WORKING_DIRECTORY)
 unset(out)
 
+run_cmake_command(E_cat-stdin ${CMAKE_COMMAND} -P ${RunCMake_SOURCE_DIR}/E_cat-stdin.cmake)
+
 # Unset environment variables that are used for testing cmake -E
 unset(ENV{TEST_ENV})
 unset(ENV{TEST_ENV_EXPECTED})
@@ -791,6 +793,7 @@ run_cmake_command(E_env-no-command1 ${CMAKE_COMMAND} -E env TEST_ENV=1)
 run_cmake_command(E_env-bad-arg1 ${CMAKE_COMMAND} -E env -bad-arg1)
 run_cmake_command(E_env-set   ${CMAKE_COMMAND} -E env TEST_ENV=1 ${CMAKE_COMMAND} -P ${RunCMake_SOURCE_DIR}/E_env-set.cmake)
 run_cmake_command(E_env-unset ${CMAKE_COMMAND} -E env TEST_ENV=1 ${CMAKE_COMMAND} -E env --unset=TEST_ENV ${CMAKE_COMMAND} -P ${RunCMake_SOURCE_DIR}/E_env-unset.cmake)
+run_cmake_command(E_env-stdin ${CMAKE_COMMAND} -DPRINT_STDIN_EXE=${PRINT_STDIN_EXE} -P ${RunCMake_SOURCE_DIR}/E_env-stdin.cmake)
 
 # To test whether the double dash (--) works for the env command, we need a command that e.g. contains an equals sign (=)
 # and would normally be interpreted as an NAME=VALUE environment variable.
@@ -1125,3 +1128,5 @@ if(RunCMake_GENERATOR MATCHES "^Visual Studio 12 2013")
   run_cmake(DeprecateVS12-WARN-ON)
   run_cmake_with_options(DeprecateVS12-WARN-OFF -DCMAKE_WARN_VS12=OFF)
 endif()
+
+run_cmake_with_options(help-arbitrary "--help" "CMAKE_CXX_IGNORE_EXTENSIONS")

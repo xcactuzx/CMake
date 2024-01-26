@@ -82,11 +82,12 @@ static auto ruleReplaceVars = { "CMAKE_${LANG}_COMPILER",
                                 "CMAKE_CURRENT_SOURCE_DIR",
                                 "CMAKE_CURRENT_BINARY_DIR",
                                 "CMAKE_RANLIB",
-                                "CMAKE_LINKER",
                                 "CMAKE_MT",
                                 "CMAKE_TAPI",
                                 "CMAKE_CUDA_HOST_COMPILER",
                                 "CMAKE_CUDA_HOST_LINK_LAUNCHER",
+                                "CMAKE_HIP_HOST_COMPILER",
+                                "CMAKE_HIP_HOST_LINK_LAUNCHER",
                                 "CMAKE_CL_SHOWINCLUDES_PREFIX" };
 
 cmLocalGenerator::cmLocalGenerator(cmGlobalGenerator* gg, cmMakefile* makefile)
@@ -1365,7 +1366,7 @@ std::vector<BT<std::string>> cmLocalGenerator::GetStaticLibraryFlags(
 {
   const std::string configUpper = cmSystemTools::UpperCase(config);
   std::vector<BT<std::string>> flags;
-  if (linkLanguage != "Swift") {
+  if (linkLanguage != "Swift" && !this->IsSplitSwiftBuild()) {
     std::string staticLibFlags;
     this->AppendFlags(
       staticLibFlags,
@@ -1602,6 +1603,7 @@ void cmLocalGenerator::GetTargetFlags(
   }
 
   std::string extraLinkFlags;
+  this->AppendLinkerTypeFlags(extraLinkFlags, target, config, linkLanguage);
   this->AppendPositionIndependentLinkerFlags(extraLinkFlags, target, config,
                                              linkLanguage);
   this->AppendIPOLinkerFlags(extraLinkFlags, target, config, linkLanguage);
@@ -1649,6 +1651,39 @@ std::vector<BT<std::string>> cmLocalGenerator::GetTargetCompileFlags(
   if (lang == "Fortran") {
     this->AppendFlags(compileFlags,
                       this->GetTargetFortranFlags(target, config));
+  } else if (lang == "Swift") {
+    // Only set the compile mode if CMP0157 is set
+    if (cm::optional<cmSwiftCompileMode> swiftCompileMode =
+          this->GetSwiftCompileMode(target, config)) {
+      std::string swiftCompileModeFlag;
+      switch (*swiftCompileMode) {
+        case cmSwiftCompileMode::Incremental: {
+          swiftCompileModeFlag = "-incremental";
+          if (cmValue flag =
+                mf->GetDefinition("CMAKE_Swift_COMPILE_OPTIONS_INCREMENTAL")) {
+            swiftCompileModeFlag = *flag;
+          }
+          break;
+        }
+        case cmSwiftCompileMode::Wholemodule: {
+          swiftCompileModeFlag = "-wmo";
+          if (cmValue flag =
+                mf->GetDefinition("CMAKE_Swift_COMPILE_OPTIONS_WMO")) {
+            swiftCompileModeFlag = *flag;
+          }
+          break;
+        }
+        case cmSwiftCompileMode::Singlefile:
+          break;
+        case cmSwiftCompileMode::Unknown: {
+          this->IssueMessage(
+            MessageType::AUTHOR_WARNING,
+            cmStrCat("Unknown Swift_COMPILATION_MODE on target '",
+                     target->GetName(), "'"));
+        }
+      }
+      this->AppendFlags(compileFlags, swiftCompileModeFlag);
+    }
   }
 
   this->AddCMP0018Flags(compileFlags, target, lang, config);
@@ -1850,11 +1885,8 @@ void cmLocalGenerator::OutputLinkLibraries(
   // Append the framework search path flags.
   cmValue fwSearchFlag = this->Makefile->GetDefinition(
     cmStrCat("CMAKE_", linkLanguage, "_FRAMEWORK_SEARCH_FLAG"));
-  cmValue sysFwSearchFlag = this->Makefile->GetDefinition(
-    cmStrCat("CMAKE_", linkLanguage, "_SYSTEM_FRAMEWORK_SEARCH_FLAG"));
 
-  frameworkPath =
-    linkLineComputer->ComputeFrameworkPath(cli, fwSearchFlag, sysFwSearchFlag);
+  frameworkPath = linkLineComputer->ComputeFrameworkPath(cli, fwSearchFlag);
   linkLineComputer->ComputeLinkPath(cli, libPathFlag, libPathTerminator,
                                     linkPath);
   linkLineComputer->ComputeLinkLibraries(cli, stdLibString, linkLibraries);
@@ -2058,7 +2090,7 @@ void cmLocalGenerator::AddLanguageFlags(std::string& flags,
         this->Makefile->GetSafeDefinition("CMAKE_CXX_SIMULATE_ID");
     }
   } else if (lang == "HIP") {
-    target->AddHIPArchitectureFlags(flags);
+    target->AddHIPArchitectureFlags(compileOrLink, config, flags);
   }
 
   // Add VFS Overlay for Clang compilers
@@ -2707,6 +2739,9 @@ void cmLocalGenerator::AddPchDependencies(cmGeneratorTarget* target)
 
         auto* pch_sf = this->Makefile->GetOrCreateSource(
           pchSource, false, cmSourceFileLocationKind::Known);
+        // PCH sources should never be scanned as they cannot contain C++
+        // module references.
+        pch_sf->SetProperty("CXX_SCAN_FOR_MODULES", "0");
 
         if (!this->GetGlobalGenerator()->IsXcode()) {
           if (!ReuseFrom) {
@@ -2770,10 +2805,10 @@ void cmLocalGenerator::AddPchDependencies(cmGeneratorTarget* target)
                 }
 
                 if (editAndContinueDebugInfo || msvc2008OrLess) {
-                  this->CopyPchCompilePdb(config, target, *ReuseFrom,
+                  this->CopyPchCompilePdb(config, lang, target, *ReuseFrom,
                                           reuseTarget, { ".pdb", ".idb" });
                 } else if (programDatabaseDebugInfo) {
-                  this->CopyPchCompilePdb(config, target, *ReuseFrom,
+                  this->CopyPchCompilePdb(config, lang, target, *ReuseFrom,
                                           reuseTarget, { ".pdb" });
                 }
               }
@@ -2830,9 +2865,9 @@ void cmLocalGenerator::AddPchDependencies(cmGeneratorTarget* target)
 }
 
 void cmLocalGenerator::CopyPchCompilePdb(
-  const std::string& config, cmGeneratorTarget* target,
-  const std::string& ReuseFrom, cmGeneratorTarget* reuseTarget,
-  const std::vector<std::string>& extensions)
+  const std::string& config, const std::string& language,
+  cmGeneratorTarget* target, const std::string& ReuseFrom,
+  cmGeneratorTarget* reuseTarget, const std::vector<std::string>& extensions)
 {
   const std::string pdb_prefix =
     this->GetGlobalGenerator()->IsMultiConfig() ? cmStrCat(config, "/") : "";
@@ -2916,6 +2951,7 @@ void cmLocalGenerator::CopyPchCompilePdb(
   cc->SetCommandLines(commandLines);
   cc->SetComment(no_message);
   cc->SetStdPipesUTF8(true);
+  cc->AppendDepends({ reuseTarget->GetPchFile(config, language) });
 
   if (this->GetGlobalGenerator()->IsVisualStudio()) {
     cc->SetByproducts(outputs);
@@ -2925,6 +2961,7 @@ void cmLocalGenerator::CopyPchCompilePdb(
   } else {
     cc->SetOutputs(outputs);
     cmSourceFile* copy_rule = this->AddCustomCommandToOutput(std::move(cc));
+    copy_rule->SetProperty("CXX_SCAN_FOR_MODULES", "0");
 
     if (copy_rule) {
       target->AddSource(copy_rule->ResolveFullPath());
@@ -2953,6 +2990,40 @@ cm::optional<std::string> cmLocalGenerator::GetMSVCDebugFormatName(
       *msvcDebugInformationFormatValue, this, config, target);
   }
   return msvcDebugInformationFormat;
+}
+
+cm::optional<cmSwiftCompileMode> cmLocalGenerator::GetSwiftCompileMode(
+  cmGeneratorTarget const* target, std::string const& config)
+{
+  cmMakefile const* mf = this->GetMakefile();
+  cmValue const swiftCompileModeDefault =
+    mf->GetDefinition("CMAKE_Swift_COMPILATION_MODE_DEFAULT");
+  if (!cmNonempty(swiftCompileModeDefault)) {
+    return {};
+  }
+  cmValue swiftCompileMode = target->GetProperty("Swift_COMPILATION_MODE");
+  if (!swiftCompileMode) {
+    swiftCompileMode = swiftCompileModeDefault;
+  }
+
+  std::string const expandedCompileMode =
+    cmGeneratorExpression::Evaluate(*swiftCompileMode, this, config, target);
+  if (expandedCompileMode == "wholemodule") {
+    return cmSwiftCompileMode::Wholemodule;
+  }
+  if (expandedCompileMode == "singlefile") {
+    return cmSwiftCompileMode::Singlefile;
+  }
+  if (expandedCompileMode == "incremental") {
+    return cmSwiftCompileMode::Incremental;
+  }
+  return cmSwiftCompileMode::Unknown;
+}
+
+bool cmLocalGenerator::IsSplitSwiftBuild() const
+{
+  return cmNonempty(this->GetMakefile()->GetDefinition(
+    "CMAKE_Swift_COMPILATION_MODE_DEFAULT"));
 }
 
 namespace {
@@ -3063,8 +3134,17 @@ cmLocalGenerator::AddUnityFilesModeAuto(
 
     chunk = std::min(itemsLeft, batchSize);
 
-    std::string filename = cmStrCat(filename_base, "unity_", batch,
-                                    (lang == "C") ? "_c.c" : "_cxx.cxx");
+    std::string extension;
+    if (lang == "C") {
+      extension = "_c.c";
+    } else if (lang == "CXX") {
+      extension = "_cxx.cxx";
+    } else if (lang == "OBJC") {
+      extension = "_m.m";
+    } else if (lang == "OBJCXX") {
+      extension = "_mm.mm";
+    }
+    std::string filename = cmStrCat(filename_base, "unity_", batch, extension);
     auto const begin = filtered_sources.begin() + batch * batchSize;
     auto const end = begin + chunk;
     unity_files.emplace_back(this->WriteUnitySource(
@@ -3130,6 +3210,15 @@ void cmLocalGenerator::AddUnityBuild(cmGeneratorTarget* target)
     std::vector<cmSourceFile*> sources;
     target->GetSourceFiles(sources, configs[ci]);
     for (cmSourceFile* sf : sources) {
+      // Files which need C++ scanning cannot participate in unity builds as
+      // there is a single place in TUs that may perform module-dependency bits
+      // and a unity source cannot `#include` them in-order and represent a
+      // valid TU.
+      if (sf->GetLanguage() == "CXX"_s &&
+          target->NeedDyndepForSource("CXX", configs[ci], sf)) {
+        continue;
+      }
+
       auto mi = index.find(sf);
       if (mi == index.end()) {
         unitySources.emplace_back(sf);
@@ -3155,7 +3244,7 @@ void cmLocalGenerator::AddUnityBuild(cmGeneratorTarget* target)
   cmValue afterInclude = target->GetProperty("UNITY_BUILD_CODE_AFTER_INCLUDE");
   cmValue unityMode = target->GetProperty("UNITY_BUILD_MODE");
 
-  for (std::string lang : { "C", "CXX" }) {
+  for (std::string lang : { "C", "CXX", "OBJC", "OBJCXX" }) {
     std::vector<UnityBatchedSource> filtered_sources;
     std::copy_if(unitySources.begin(), unitySources.end(),
                  std::back_inserter(filtered_sources),
@@ -3192,11 +3281,55 @@ void cmLocalGenerator::AddUnityBuild(cmGeneratorTarget* target)
       target->AddSource(file.Path, true);
       unity->SetProperty("SKIP_UNITY_BUILD_INCLUSION", "ON");
       unity->SetProperty("UNITY_SOURCE_FILE", file.Path);
+      unity->SetProperty("CXX_SCAN_FOR_MODULES", "0");
       if (file.PerConfig) {
         unity->SetProperty("COMPILE_DEFINITIONS",
                            "CMAKE_UNITY_CONFIG_$<UPPER_CASE:$<CONFIG>>");
       }
     }
+  }
+}
+
+void cmLocalGenerator::AppendLinkerTypeFlags(std::string& flags,
+                                             cmGeneratorTarget* target,
+                                             const std::string& config,
+                                             const std::string& linkLanguage)
+{
+  switch (target->GetType()) {
+    case cmStateEnums::EXECUTABLE:
+    case cmStateEnums::SHARED_LIBRARY:
+    case cmStateEnums::MODULE_LIBRARY:
+      break;
+    default:
+      return;
+  }
+
+  auto usingLinker =
+    cmStrCat("CMAKE_", linkLanguage, "_USING_",
+             target->IsDeviceLink() ? "DEVICE_" : "", "LINKER_");
+
+  auto format = this->Makefile->GetDefinition(cmStrCat(usingLinker, "MODE"));
+  if (format && format != "FLAG"_s) {
+    return;
+  }
+
+  auto linkerType = target->GetLinkerTypeProperty(linkLanguage, config);
+  if (linkerType.empty()) {
+    linkerType = "DEFAULT";
+  }
+  usingLinker = cmStrCat(usingLinker, linkerType);
+  auto linkerTypeFlags = this->Makefile->GetDefinition(usingLinker);
+  if (linkerTypeFlags) {
+    if (!linkerTypeFlags.IsEmpty()) {
+      auto linkerFlags = cmExpandListWithBacktrace(linkerTypeFlags);
+      target->ResolveLinkerWrapper(linkerFlags, linkLanguage);
+      this->AppendFlags(flags, linkerFlags);
+    }
+  } else if (linkerType != "DEFAULT"_s) {
+    this->IssueMessage(MessageType::FATAL_ERROR,
+                       cmStrCat("LINKER_TYPE '", linkerType,
+                                "' is unknown. Did you forgot to define '",
+                                usingLinker, "' variable?"));
   }
 }
 

@@ -37,6 +37,11 @@
    \* CMP0119
    \* CMP0131
    \* CMP0142
+   \* CMP0154
+   \* CMP0155
+   \* CMP0156
+   \* CMP0157
+   \* CMP0160
 
 Call Stack \(most recent call first\):
   CMakeLists.txt:3 \(include\)

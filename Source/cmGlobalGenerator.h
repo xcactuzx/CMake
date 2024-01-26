@@ -156,7 +156,17 @@ public:
 
   virtual bool InspectConfigTypeVariables() { return true; }
 
-  virtual bool CheckCxxModuleSupport() { return false; }
+  enum class CxxModuleSupportQuery
+  {
+    // Support is expected at the call site.
+    Expected,
+    // The call site is querying for support and handles problems by itself.
+    Inspect,
+  };
+  virtual bool CheckCxxModuleSupport(CxxModuleSupportQuery /*query*/)
+  {
+    return false;
+  }
 
   virtual bool IsGNUMakeJobServerAware() const { return false; }
 
@@ -339,6 +349,8 @@ public:
   int GetLinkerPreference(const std::string& lang) const;
   //! What is the object file extension for a given source file?
   std::string GetLanguageOutputExtension(cmSourceFile const&) const;
+  //! What is the object file extension for a given language?
+  std::string GetLanguageOutputExtension(std::string const& lang) const;
 
   //! What is the configurations directory variable called?
   virtual const char* GetCMakeCFGIntDir() const { return "."; }
@@ -667,6 +679,7 @@ protected:
   bool AddHeaderSetVerification();
 
   bool AddAutomaticSources();
+  bool AddUnitySources();
 
   std::string SelectMakeProgram(const std::string& makeProgram,
                                 const std::string& makeDefault = "") const;

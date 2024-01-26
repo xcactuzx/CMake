@@ -76,9 +76,6 @@ bool cmExportInstallFileGenerator::GenerateMainFile(std::ostream& os)
   // Compute the relative import prefix for the file
   this->GenerateImportPrefix(os);
 
-  bool require2_8_12 = false;
-  bool require3_0_0 = false;
-  bool require3_1_0 = false;
   bool requiresConfigFiles = false;
   // Create all the imported targets.
   for (cmTargetExport* te : allTargets) {
@@ -92,8 +89,10 @@ bool cmExportInstallFileGenerator::GenerateMainFile(std::ostream& os)
 
     ImportPropertyMap properties;
 
+    std::string includesDestinationDirs;
     this->PopulateIncludeDirectoriesInterface(
-      gt, cmGeneratorExpression::InstallInterface, properties, *te);
+      gt, cmGeneratorExpression::InstallInterface, properties, *te,
+      includesDestinationDirs);
     this->PopulateSourcesInterface(gt, cmGeneratorExpression::InstallInterface,
                                    properties);
     this->PopulateInterfaceProperty("INTERFACE_SYSTEM_INCLUDE_DIRECTORIES", gt,
@@ -128,7 +127,7 @@ bool cmExportInstallFileGenerator::GenerateMainFile(std::ostream& os)
     std::string errorMessage;
     if (!this->PopulateCxxModuleExportProperties(
           gt, properties, cmGeneratorExpression::InstallInterface,
-          errorMessage)) {
+          includesDestinationDirs, errorMessage)) {
       cmSystemTools::Error(errorMessage);
       return false;
     }
@@ -145,16 +144,16 @@ bool cmExportInstallFileGenerator::GenerateMainFile(std::ostream& os)
       if (this->PopulateInterfaceLinkLibrariesProperty(
             gt, cmGeneratorExpression::InstallInterface, properties) &&
           !this->ExportOld) {
-        require2_8_12 = true;
+        this->SetRequiredCMakeVersion(2, 8, 12);
       }
     }
     if (targetType == cmStateEnums::INTERFACE_LIBRARY) {
-      require3_0_0 = true;
+      this->SetRequiredCMakeVersion(3, 0, 0);
     }
     if (gt->GetProperty("INTERFACE_SOURCES")) {
       // We can only generate INTERFACE_SOURCES in CMake 3.3, but CMake 3.1
       // can consume them.
-      require3_1_0 = true;
+      this->SetRequiredCMakeVersion(3, 1, 0);
     }
 
     this->PopulateInterfaceProperty("INTERFACE_POSITION_INDEPENDENT_CODE", gt,
@@ -167,22 +166,16 @@ bool cmExportInstallFileGenerator::GenerateMainFile(std::ostream& os)
     this->GenerateTargetFileSets(gt, os, te);
   }
 
-  if (require3_1_0) {
-    this->GenerateRequiredCMakeVersion(os, "3.1.0");
-  } else if (require3_0_0) {
-    this->GenerateRequiredCMakeVersion(os, "3.0.0");
-  } else if (require2_8_12) {
-    this->GenerateRequiredCMakeVersion(os, "2.8.12");
-  }
-
   this->LoadConfigFiles(os);
 
   bool result = true;
 
-  this->GenerateCxxModuleInformation(os);
+  std::string cxx_modules_name = this->IEGen->GetExportSet()->GetName();
+  this->GenerateCxxModuleInformation(cxx_modules_name, os);
   if (requiresConfigFiles) {
     for (std::string const& c : this->Configurations) {
-      if (!this->GenerateImportCxxModuleConfigTargetInclusion(c)) {
+      if (!this->GenerateImportCxxModuleConfigTargetInclusion(cxx_modules_name,
+                                                              c)) {
         result = false;
       }
     }
@@ -384,9 +377,26 @@ void cmExportInstallFileGenerator::GenerateImportTargetsConfig(
       //                              properties);
 
       // Generate code in the export file.
-      this->GenerateImportPropertyCode(os, config, gtgt, properties);
-      this->GenerateImportedFileChecksCode(os, gtgt, properties,
-                                           importedLocations);
+      std::string importedXcFrameworkLocation = te->XcFrameworkLocation;
+      if (!importedXcFrameworkLocation.empty()) {
+        importedXcFrameworkLocation = cmGeneratorExpression::Preprocess(
+          importedXcFrameworkLocation,
+          cmGeneratorExpression::PreprocessContext::InstallInterface, true);
+        importedXcFrameworkLocation = cmGeneratorExpression::Evaluate(
+          importedXcFrameworkLocation, te->Target->GetLocalGenerator(), config,
+          te->Target, nullptr, te->Target);
+        if (!importedXcFrameworkLocation.empty() &&
+            !cmSystemTools::FileIsFullPath(importedXcFrameworkLocation) &&
+            !cmHasLiteralPrefix(importedXcFrameworkLocation,
+                                "${_IMPORT_PREFIX}/")) {
+          importedXcFrameworkLocation =
+            cmStrCat("${_IMPORT_PREFIX}/", importedXcFrameworkLocation);
+        }
+      }
+      this->GenerateImportPropertyCode(os, config, suffix, gtgt, properties,
+                                       importedXcFrameworkLocation);
+      this->GenerateImportedFileChecksCode(
+        os, gtgt, properties, importedLocations, importedXcFrameworkLocation);
     }
   }
 }
@@ -716,12 +726,12 @@ std::string cmExportInstallFileGenerator::GetCxxModulesDirectory() const
 }
 
 void cmExportInstallFileGenerator::GenerateCxxModuleConfigInformation(
-  std::ostream& os) const
+  std::string const& name, std::ostream& os) const
 {
   // Now load per-configuration properties for them.
   /* clang-format off */
   os << "# Load information for each installed configuration.\n"
-        "file(GLOB _cmake_cxx_module_includes \"${CMAKE_CURRENT_LIST_DIR}/cxx-modules-*.cmake\")\n"
+        "file(GLOB _cmake_cxx_module_includes \"${CMAKE_CURRENT_LIST_DIR}/cxx-modules-" << name << "-*.cmake\")\n"
         "foreach(_cmake_cxx_module_include IN LISTS _cmake_cxx_module_includes)\n"
         "  include(\"${_cmake_cxx_module_include}\")\n"
         "endforeach()\n"
@@ -731,7 +741,8 @@ void cmExportInstallFileGenerator::GenerateCxxModuleConfigInformation(
 }
 
 bool cmExportInstallFileGenerator::
-  GenerateImportCxxModuleConfigTargetInclusion(std::string const& config)
+  GenerateImportCxxModuleConfigTargetInclusion(std::string const& name,
+                                               std::string const& config)
 {
   auto cxx_modules_dirname = this->GetCxxModulesDirectory();
   if (cxx_modules_dirname.empty()) {
@@ -746,7 +757,7 @@ bool cmExportInstallFileGenerator::
   std::string const dest =
     cmStrCat(this->FileDir, '/', cxx_modules_dirname, '/');
   std::string fileName =
-    cmStrCat(dest, "cxx-modules-", filename_config, ".cmake");
+    cmStrCat(dest, "cxx-modules-", name, '-', filename_config, ".cmake");
 
   cmGeneratedFileStream os(fileName, true);
   if (!os) {

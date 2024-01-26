@@ -251,8 +251,8 @@ cmake_doc_dir_default="`cmake_install_dest_default DOC ${cmake_doc_dir_keyword}`
 cmake_man_dir_default="`cmake_install_dest_default MAN ${cmake_man_dir_keyword}`"
 cmake_xdgdata_dir_default="`cmake_install_dest_default XDGDATA ${cmake_xdgdata_dir_keyword}`"
 
-CMAKE_KNOWN_C_COMPILERS="cc gcc clang xlc icc tcc"
-CMAKE_KNOWN_CXX_COMPILERS="aCC xlC CC g++ clang++ c++ icc como "
+CMAKE_KNOWN_C_COMPILERS="cc gcc clang xlc icx tcc"
+CMAKE_KNOWN_CXX_COMPILERS="aCC xlC CC g++ clang++ c++ icpx"
 CMAKE_KNOWN_MAKE_PROCESSORS="gmake make smake"
 CMAKE_KNOWN_NINJA_PROCESSORS="ninja-build ninja samu"
 
@@ -364,6 +364,7 @@ CMAKE_CXX_SOURCES="\
   cmFindFileCommand \
   cmFindLibraryCommand \
   cmFindPackageCommand \
+  cmFindPackageStack \
   cmFindPathCommand \
   cmFindProgramCommand \
   cmForEachCommand \
@@ -508,6 +509,7 @@ CMAKE_CXX_SOURCES="\
   cmake  \
   cmakemain \
   cmcmd  \
+  cm_fileno \
 "
 
 if ${cmake_system_mingw}; then
@@ -592,6 +594,7 @@ LIBRHASH_C_SOURCES="\
   librhash/sha256.c \
   librhash/sha3.c \
   librhash/sha512.c \
+  librhash/util.c \
   "
 
 JSONCPP_CXX_SOURCES="\
@@ -1790,6 +1793,7 @@ else
   libs="${libs} -luv"
 fi
 
+librhash_c_flags="-DNO_IMPORT_EXPORT"
 if test "x${bootstrap_system_librhash}" != "x"; then
   if test `which pkg-config`; then
     use_librhash_flags="`pkg-config --cflags librhash`"
@@ -1944,7 +1948,7 @@ fi
 if test "x${bootstrap_system_librhash}" = "x"; then
   for a in ${LIBRHASH_C_SOURCES}; do
     src=`cmake_escape_artifact "${cmake_source_dir}/Utilities/cmlibrhash/${a}"`
-    write_source_rule "c" "rhash-`cmake_obj ${a}`" "${src}" ""
+    write_source_rule "c" "rhash-`cmake_obj ${a}`" "${src}" "${librhash_c_flags}"
   done
 fi
 if test "x${bootstrap_system_jsoncpp}" = "x"; then

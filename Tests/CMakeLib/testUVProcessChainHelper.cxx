@@ -7,11 +7,11 @@
 #include <string>
 #include <thread>
 
+#include "cmSystemTools.h"
+
 #ifdef _WIN32
 #  include <windows.h>
 #endif
-
-#include "cmSystemTools.h"
 
 static std::string getStdin()
 {

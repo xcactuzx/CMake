@@ -232,10 +232,7 @@ Signatures
     would be installed to ``myproj/here.h`` below the destination.
 
   ``CXX_MODULES_BMI``
-
-    .. note ::
-
-      Experimental. Gated by ``CMAKE_EXPERIMENTAL_CXX_MODULE_CMAKE_API``
+    .. versionadded:: 3.28
 
     Any module files from C++ modules from ``PUBLIC`` sources in a file set of
     type ``CXX_MODULES`` will be installed to the given ``DESTINATION``. All
@@ -787,7 +784,8 @@ Signatures
             [CXX_MODULES_DIRECTORY <directory>]
             [EXPORT_LINK_INTERFACE_LIBRARIES]
             [COMPONENT <component>]
-            [EXCLUDE_FROM_ALL])
+            [EXCLUDE_FROM_ALL]
+            [EXPORT_PACKAGE_DEPENDENCIES])
     install(EXPORT_ANDROID_MK <export-name> DESTINATION <dir> [...])
 
   The ``EXPORT`` form generates and installs a CMake file containing code to
@@ -843,16 +841,41 @@ Signatures
     and defines required to use the libraries.
 
   ``CXX_MODULES_DIRECTORY``
-
-    .. note ::
-
-      Experimental. Gated by ``CMAKE_EXPERIMENTAL_CXX_MODULE_CMAKE_API``
+    .. versionadded:: 3.28
 
     Specify a subdirectory to store C++ module information for targets in the
     export set. This directory will be populated with files which add the
     necessary target property information to the relevant targets. Note that
     without this information, none of the C++ modules which are part of the
     targets in the export set will support being imported in consuming targets.
+
+  ``EXPORT_PACKAGE_DEPENDENCIES``
+    .. versionadded:: 3.29
+
+    Specify that :command:`find_dependency` calls should be exported. If this
+    argument is specified, CMake examines all targets in the export set and
+    gathers their ``INTERFACE`` link targets. If any such targets either were
+    found with :command:`find_package` or have the
+    :prop_tgt:`EXPORT_FIND_PACKAGE_NAME` property set, and such package
+    dependency was not disabled by passing ``ENABLED OFF`` to
+    :command:`export(SETUP)`, then a :command:`find_dependency` call is
+    written with the target's corresponding package name, a ``REQUIRED``
+    argument, and any additional arguments specified by the ``EXTRA_ARGS``
+    argument of :command:`export(SETUP)`. Any package dependencies that were
+    manually specified by passing ``ENABLED ON`` to :command:`export(SETUP)`
+    are also added, even if the exported targets don't depend on any targets
+    from them.
+
+    The :command:`find_dependency` calls are written in the following order:
+
+    1. Any package dependencies that were listed in :command:`export(SETUP)`
+       are written in the order they were first specified, regardless of
+       whether or not they contain ``INTERFACE`` dependencies of the
+       exported targets.
+    2. Any package dependencies that contain ``INTERFACE`` link dependencies
+       of the exported targets and that were never specified in
+       :command:`export(SETUP)` are written in the order they were first
+       found.
 
   The ``EXPORT`` form is useful to help outside projects use targets built
   and installed by the current project.  For example, the code

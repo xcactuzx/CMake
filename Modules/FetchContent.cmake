@@ -111,6 +111,7 @@ Commands
     FetchContent_Declare(
       <name>
       <contentOptions>...
+      [EXCLUDE_FROM_ALL]
       [SYSTEM]
       [OVERRIDE_FIND_PACKAGE |
        FIND_PACKAGE_ARGS args...]
@@ -194,6 +195,12 @@ Commands
       still be called if :variable:`FETCHCONTENT_TRY_FIND_PACKAGE_MODE` is
       set to ``OPT_IN`` or is not set.
 
+      It would not normally be appropriate to specify ``REQUIRED`` as one of
+      the additional arguments after ``FIND_PACKAGE_ARGS``.  Doing so would
+      mean the :command:`find_package` call must succeed, so none of the other
+      details specified in the ``FetchContent_Declare()`` call would get a
+      chance to be used as a fall-back.
+
       Everything after the ``FIND_PACKAGE_ARGS`` keyword is appended to the
       :command:`find_package` call, so all other ``<contentOptions>`` must
       come before the ``FIND_PACKAGE_ARGS`` keyword.  If the
@@ -239,6 +246,15 @@ Commands
       affect non-imported targets created as part of that command.
       See the :prop_tgt:`SYSTEM` target property documentation for a more
       detailed discussion of the effects.
+
+  .. versionadded:: 3.28
+
+    ``EXCLUDE_FROM_ALL``
+      If the ``EXCLUDE_FROM_ALL`` argument is provided, then targets in the
+      subdirectory added by :command:`FetchContent_MakeAvailable` will not be
+      included in the ``ALL`` target by default, and may be excluded from IDE
+      project files. See the :command:`add_subdirectory` ``EXCLUDE_FROM_ALL``
+      argument documentation for a more detailed discussion of the effects.
 
 .. command:: FetchContent_MakeAvailable
 
@@ -357,6 +373,15 @@ Commands
       If the ``SYSTEM`` keyword was included in the call to
       :command:`FetchContent_Declare`, the ``SYSTEM`` keyword will be
       added to the :command:`add_subdirectory` command as well.
+
+    .. versionadded:: 3.28
+      If the ``EXCLUDE_FROM_ALL`` keyword was included in the call to
+      :command:`FetchContent_Declare`, the ``EXCLUDE_FROM_ALL`` keyword will
+      be added to the :command:`add_subdirectory` command as well.
+
+    .. versionadded:: 3.29
+      :variable:`CMAKE_EXPORT_FIND_PACKAGE_NAME` is set to the dependency name
+      before calling :command:`add_subdirectory`.
 
   Projects should aim to declare the details of all dependencies they might
   use before they call ``FetchContent_MakeAvailable()`` for any of them.
@@ -659,6 +684,17 @@ A number of cache variables can influence the behavior where details from a
   further below).  When the developer knows that no changes have been made to
   any content details, turning this option ``ON`` can significantly speed up
   the configure stage.  It is ``OFF`` by default.
+
+  .. note::
+
+    The ``FETCHCONTENT_FULLY_DISCONNECTED`` variable is not an appropriate way
+    to prevent any network access on the first run in a build directory.
+    Doing so can break projects, lead to misleading error messages, and hide
+    subtle population failures.  This variable is specifically intended to
+    only be turned on *after* the first time CMake has been run.
+    If you want to prevent network access even on the first run, use a
+    :ref:`dependency provider <dependency_providers>` and populate the
+    dependency from local content instead.
 
 .. variable:: FETCHCONTENT_UPDATES_DISCONNECTED
 
@@ -1179,10 +1215,10 @@ function(__FetchContent_declareDetails contentName)
     set(propertyName "_FetchContent_${contentNameLower}_find_package_args")
     define_property(GLOBAL PROPERTY ${propertyName})
     if(NOT __sawQuietKeyword)
-      list(INSERT __findPackageArgs 0 QUIET)
+      string(PREPEND __findPackageArgs "QUIET ")
     endif()
     if(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL AND NOT __sawGlobalKeyword)
-      list(APPEND __findPackageArgs GLOBAL)
+      string(APPEND __findPackageArgs " GLOBAL")
     endif()
     cmake_language(EVAL CODE
       "set_property(GLOBAL PROPERTY ${propertyName} ${__findPackageArgs})"
@@ -1466,8 +1502,10 @@ function(__FetchContent_directPopulate contentName)
 
   set(options
       QUIET
-      # SYSTEM has no meaning for ExternalProject, it is only used by us in
-      # FetchContent_MakeAvailable(). We need to parse and discard it here.
+      # EXCLUDE_FROM_ALL and SYSTEM have no meaning for ExternalProject, they
+      # are only used by us in FetchContent_MakeAvailable(). We need to parse
+      # and discard them here.
+      EXCLUDE_FROM_ALL
       SYSTEM
   )
   set(oneValueArgs
@@ -1577,6 +1615,20 @@ ExternalProject_Add_Step(${contentName}-populate copyfile
     endif()
     if(CMAKE_MAKE_PROGRAM)
       list(APPEND subCMakeOpts "-DCMAKE_MAKE_PROGRAM:FILEPATH=${CMAKE_MAKE_PROGRAM}")
+    endif()
+
+    # GreenHills needs to know about the compiler and toolset to run the
+    # subbuild commands. Be sure to update the similar section in
+    # ExternalProject.cmake:_ep_extract_configure_command()
+    if(CMAKE_GENERATOR MATCHES "Green Hills MULTI")
+      list(APPEND subCMakeOpts
+        "-DGHS_TARGET_PLATFORM:STRING=${GHS_TARGET_PLATFORM}"
+        "-DGHS_PRIMARY_TARGET:STRING=${GHS_PRIMARY_TARGET}"
+        "-DGHS_TOOLSET_ROOT:STRING=${GHS_TOOLSET_ROOT}"
+        "-DGHS_OS_ROOT:STRING=${GHS_OS_ROOT}"
+        "-DGHS_OS_DIR:STRING=${GHS_OS_DIR}"
+        "-DGHS_BSP_NAME:STRING=${GHS_BSP_NAME}"
+      )
     endif()
 
     # Override the sub-build's configuration types for multi-config generators.
@@ -1913,6 +1965,10 @@ macro(FetchContent_MakeAvailable)
           "Trying FETCHCONTENT_MAKEAVAILABLE_SERIAL dependency provider for "
           "${__cmake_contentName}"
         )
+
+        list(APPEND __cmake_fcCurrentVarsStack "__fcprefix__${CMAKE_EXPORT_FIND_PACKAGE_NAME}")
+        set(CMAKE_EXPORT_FIND_PACKAGE_NAME "${__cmake_contentName}")
+
         # It's still valid if there are no saved details. The project may have
         # been written to assume a dependency provider is always set and will
         # provide dependencies without having any declared details for them.
@@ -1930,12 +1986,12 @@ macro(FetchContent_MakeAvailable)
         # This property might be defined but empty. As long as it is defined,
         # find_package() can be called.
         get_property(__cmake_addfpargs GLOBAL PROPERTY
-          _FetchContent_${contentNameLower}_find_package_args
+          _FetchContent_${__cmake_contentNameLower}_find_package_args
           DEFINED
         )
         if(__cmake_addfpargs)
           get_property(__cmake_fpargs GLOBAL PROPERTY
-            _FetchContent_${contentNameLower}_find_package_args
+            _FetchContent_${__cmake_contentNameLower}_find_package_args
           )
           string(APPEND __cmake_providerArgs " FIND_PACKAGE_ARGS")
           foreach(__cmake_item IN LISTS __cmake_fpargs)
@@ -1966,6 +2022,12 @@ macro(FetchContent_MakeAvailable)
         unset(__cmake_fpargs)
         unset(__cmake_item)
         unset(__cmake_contentDetails)
+
+        list(POP_BACK __cmake_fcCurrentVarsStack __cmake_original_export_find_package_name)
+        string(SUBSTRING "${__cmake_original_export_find_package_name}"
+          12 -1 __cmake_original_export_find_package_name
+        )
+        set(CMAKE_EXPORT_FIND_PACKAGE_NAME ${__cmake_original_export_find_package_name})
 
         FetchContent_GetProperties(${__cmake_contentName})
         if(${__cmake_contentNameLower}_POPULATED)
@@ -2030,22 +2092,37 @@ macro(FetchContent_MakeAvailable)
       if("${__cmake_contentDetails}" STREQUAL "")
         message(FATAL_ERROR "No details have been set for content: ${__cmake_contentName}")
       endif()
-      cmake_parse_arguments(__cmake_arg "SYSTEM" "SOURCE_SUBDIR" "" ${__cmake_contentDetails})
+      cmake_parse_arguments(__cmake_arg "EXCLUDE_FROM_ALL;SYSTEM" "SOURCE_SUBDIR" "" ${__cmake_contentDetails})
       if(NOT "${__cmake_arg_SOURCE_SUBDIR}" STREQUAL "")
         string(APPEND __cmake_srcdir "/${__cmake_arg_SOURCE_SUBDIR}")
       endif()
 
       if(EXISTS ${__cmake_srcdir}/CMakeLists.txt)
-        if (__cmake_arg_SYSTEM)
-          add_subdirectory(${__cmake_srcdir} ${${__cmake_contentNameLower}_BINARY_DIR} SYSTEM)
-        else()
-          add_subdirectory(${__cmake_srcdir} ${${__cmake_contentNameLower}_BINARY_DIR})
+        list(APPEND __cmake_fcCurrentVarsStack "__fcprefix__${CMAKE_EXPORT_FIND_PACKAGE_NAME}")
+        set(CMAKE_EXPORT_FIND_PACKAGE_NAME "${__cmake_contentName}")
+
+        set(__cmake_add_subdirectory_args ${__cmake_srcdir} ${${__cmake_contentNameLower}_BINARY_DIR})
+        if(__cmake_arg_EXCLUDE_FROM_ALL)
+          list(APPEND __cmake_add_subdirectory_args EXCLUDE_FROM_ALL)
         endif()
+        if(__cmake_arg_SYSTEM)
+          list(APPEND __cmake_add_subdirectory_args SYSTEM)
+        endif()
+        add_subdirectory(${__cmake_add_subdirectory_args})
+
+        list(POP_BACK __cmake_fcCurrentVarsStack __cmake_original_export_find_package_name)
+        string(SUBSTRING "${__cmake_original_export_find_package_name}"
+          12 -1 __cmake_original_export_find_package_name
+        )
+        set(CMAKE_EXPORT_FIND_PACKAGE_NAME ${__cmake_original_export_find_package_name})
       endif()
 
       unset(__cmake_srcdir)
       unset(__cmake_contentDetails)
+      unset(__cmake_arg_EXCLUDE_FROM_ALL)
+      unset(__cmake_arg_SYSTEM)
       unset(__cmake_arg_SOURCE_SUBDIR)
+      unset(__cmake_add_subdirectory_args)
     endif()
   endforeach()
 

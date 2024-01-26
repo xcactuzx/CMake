@@ -67,6 +67,15 @@ enum class cmBuildStep
   Link
 };
 
+/** What compilation mode the swift files are in */
+enum class cmSwiftCompileMode
+{
+  Wholemodule,
+  Incremental,
+  Singlefile,
+  Unknown,
+};
+
 /** Target and source file which have a specific output.  */
 struct cmSourcesWithOutput
 {
@@ -177,6 +186,9 @@ public:
   void AddPchDependencies(cmGeneratorTarget* target);
   void AddUnityBuild(cmGeneratorTarget* target);
   virtual void AddXCConfigSources(cmGeneratorTarget* /* target */) {}
+  void AppendLinkerTypeFlags(std::string& flags, cmGeneratorTarget* target,
+                             const std::string& config,
+                             const std::string& linkLanguage);
   void AppendIPOLinkerFlags(std::string& flags, cmGeneratorTarget* target,
                             const std::string& config,
                             const std::string& lang);
@@ -546,6 +558,14 @@ public:
                               const std::string& prop,
                               const std::string& config);
 
+  // Return Swift_COMPILATION_MODE value if CMP0157 is NEW.
+  cm::optional<cmSwiftCompileMode> GetSwiftCompileMode(
+    cmGeneratorTarget const* target, std::string const& config);
+
+  // Can we build Swift with a separate object build and link step
+  // (If CMP0157 is NEW, we can do a split build)
+  bool IsSplitSwiftBuild() const;
+
 protected:
   // The default implementation converts to a Windows shortpath to
   // help older toolchains handle spaces and such.  A generator may
@@ -649,7 +669,9 @@ private:
   bool AllAppleArchSysrootsAreTheSame(const std::vector<std::string>& archs,
                                       cmValue sysroot);
 
-  void CopyPchCompilePdb(const std::string& config, cmGeneratorTarget* target,
+  void CopyPchCompilePdb(const std::string& config,
+                         const std::string& language,
+                         cmGeneratorTarget* target,
                          const std::string& ReuseFrom,
                          cmGeneratorTarget* reuseTarget,
                          std::vector<std::string> const& extensions);

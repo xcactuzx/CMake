@@ -27,7 +27,6 @@
 #include "cmsys/Glob.hxx"
 #include "cmsys/RegularExpression.hxx"
 
-#include "cm_fileno.hxx"
 #include "cm_sys_stat.h"
 
 #include "cmBuildOptions.h"
@@ -784,6 +783,9 @@ void cmake::ReadListFile(const std::vector<std::string>& args,
       mf.SetScriptModeFile(file);
 
       mf.SetArgcArgv(args);
+    }
+    if (!cmSystemTools::FileExists(path, true)) {
+      cmSystemTools::Error("Not a file: " + path);
     }
     if (!mf.ReadListFile(path)) {
       cmSystemTools::Error("Error processing file: " + path);
@@ -1573,14 +1575,15 @@ void cmake::SetArgs(const std::vector<std::string>& args)
     if (!expandedPreset->ArchitectureStrategy ||
         expandedPreset->ArchitectureStrategy ==
           cmCMakePresetsGraph::ArchToolsetStrategy::Set) {
-      if (!this->GeneratorPlatformSet) {
+      if (!this->GeneratorPlatformSet &&
+          !expandedPreset->Architecture.empty()) {
         this->SetGeneratorPlatform(expandedPreset->Architecture);
       }
     }
     if (!expandedPreset->ToolsetStrategy ||
         expandedPreset->ToolsetStrategy ==
           cmCMakePresetsGraph::ArchToolsetStrategy::Set) {
-      if (!this->GeneratorToolsetSet) {
+      if (!this->GeneratorToolsetSet && !expandedPreset->Toolset.empty()) {
         this->SetGeneratorToolset(expandedPreset->Toolset);
       }
     }
@@ -1704,10 +1707,8 @@ void cmake::SetTraceFile(const std::string& file)
   this->TraceFile.close();
   this->TraceFile.open(file.c_str());
   if (!this->TraceFile) {
-    std::stringstream ss;
-    ss << "Error opening trace file " << file << ": "
-       << cmSystemTools::GetLastSystemError();
-    cmSystemTools::Error(ss.str());
+    cmSystemTools::Error(cmStrCat("Error opening trace file ", file, ": ",
+                                  cmSystemTools::GetLastSystemError()));
     return;
   }
   std::cout << "Trace will be written to " << file << '\n';
@@ -2394,8 +2395,15 @@ int cmake::ActualConfigure()
   cmSystemTools::RemoveADirectory(redirectsDir);
   if (!cmSystemTools::MakeDirectory(redirectsDir)) {
     cmSystemTools::Error(
-      "Unable to (re)create the private pkgRedirects directory:\n" +
-      redirectsDir);
+      cmStrCat("Unable to (re)create the private pkgRedirects directory:\n  ",
+               redirectsDir,
+               "\n"
+               "This may be caused by not having read/write access to "
+               "the build directory.\n"
+               "Try specifying a location with read/write access like:\n"
+               "  cmake -B build\n"
+               "If using a CMake presets file, ensure that preset parameter\n"
+               "'binaryDir' expands to a writable directory.\n"));
     return -1;
   }
   this->AddCacheEntry("CMAKE_FIND_PACKAGE_REDIRECTS_DIR", redirectsDir,
@@ -2505,6 +2513,16 @@ int cmake::ActualConfigure()
   } else {
     this->AddCacheEntry("CMAKE_GENERATOR_TOOLSET", this->GeneratorToolset,
                         "Name of generator toolset.", cmStateEnums::INTERNAL);
+  }
+
+  if (!this->State->GetInitializedCacheValue("CMAKE_TEST_LAUNCHER")) {
+    cm::optional<std::string> testLauncher =
+      cmSystemTools::GetEnvVar("CMAKE_TEST_LAUNCHER");
+    if (testLauncher && !testLauncher->empty()) {
+      std::string message = "Test launcher to run tests executable.";
+      this->AddCacheEntry("CMAKE_TEST_LAUNCHER", *testLauncher, message,
+                          cmStateEnums::STRING);
+    }
   }
 
   if (!this->State->GetInitializedCacheValue(
@@ -2801,7 +2819,7 @@ int cmake::Run(const std::vector<std::string>& args, bool noconfigure)
     if (cmSystemTools::GetErrorOccurredFlag()) {
       return -1;
     }
-    return 0;
+    return this->HasScriptModeExitCode() ? this->GetScriptModeExitCode() : 0;
   }
 
   // If MAKEFLAGS are given in the environment, remove the environment
@@ -3264,7 +3282,7 @@ int cmake::CheckBuildSystem()
   // If any byproduct of makefile generation is missing we must re-run.
   cmList products{ mf.GetDefinition("CMAKE_MAKEFILE_PRODUCTS") };
   for (auto const& p : products) {
-    if (!(cmSystemTools::FileExists(p) || cmSystemTools::FileIsSymlink(p))) {
+    if (!cmSystemTools::PathExists(p)) {
       if (verbose) {
         cmSystemTools::Stdout(
           cmStrCat("Re-run cmake, missing byproduct: ", p, '\n'));
@@ -3915,10 +3933,8 @@ std::function<int()> cmake::BuildWorkflowStep(
 {
   cmUVProcessChainBuilder builder;
   builder.AddCommand(args)
-    .SetExternalStream(cmUVProcessChainBuilder::Stream_OUTPUT,
-                       cm_fileno(stdout))
-    .SetExternalStream(cmUVProcessChainBuilder::Stream_ERROR,
-                       cm_fileno(stderr));
+    .SetExternalStream(cmUVProcessChainBuilder::Stream_OUTPUT, stdout)
+    .SetExternalStream(cmUVProcessChainBuilder::Stream_ERROR, stderr);
   return [builder]() -> int {
     auto chain = builder.Start();
     chain.Wait();

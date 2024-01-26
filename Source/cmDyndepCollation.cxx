@@ -122,10 +122,11 @@ Json::Value CollationInformationCxxModules(
         auto lookup = sf_map.find(file);
         if (lookup == sf_map.end()) {
           gt->Makefile->IssueMessage(
-            MessageType::INTERNAL_ERROR,
-            cmStrCat("Target \"", tgt->GetName(), "\" has source file \"",
+            MessageType::FATAL_ERROR,
+            cmStrCat("Target \"", tgt->GetName(), "\" has source file\n  ",
                      file,
-                     R"(" which is not in any of its "FILE_SET BASE_DIRS".)"));
+                     "\nin a \"FILE_SET TYPE CXX_MODULES\" but it is not "
+                     "scheduled for compilation."));
           continue;
         }
 
@@ -241,14 +242,16 @@ Json::Value CollationInformationExports(cmGeneratorTarget const* gt)
 
   auto const& all_build_exports = gt->Makefile->GetExportBuildFileGenerators();
   for (auto const& exp : all_build_exports) {
-    std::vector<std::string> targets;
+    std::vector<cmExportBuildFileGenerator::TargetExport> targets;
     exp->GetTargets(targets);
 
     // Ignore exports sets which are not for this target.
     auto const& name = gt->GetName();
     bool has_current_target =
       std::any_of(targets.begin(), targets.end(),
-                  [name](std::string const& tname) { return tname == name; });
+                  [name](cmExportBuildFileGenerator::TargetExport const& te) {
+                    return te.Name == name;
+                  });
     if (!has_current_target) {
       continue;
     }
@@ -492,7 +495,8 @@ bool cmDyndepCollation::WriteDyndepMetadata(
       if (!has_provides) {
         cmSystemTools::Error(
           cmStrCat("Output ", object.PrimaryOutput,
-                   " is of type `CXX_MODULES` but does not provide a module"));
+                   " is of type `CXX_MODULES` but does not provide a module "
+                   "interface unit or partition"));
         result = false;
         continue;
       }

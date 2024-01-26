@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.24...3.28)
 project(scan_properties CXX)
 
 include("${CMAKE_SOURCE_DIR}/../cxx-modules-rules.cmake")
@@ -11,15 +11,17 @@ endif ()
 # To detect that not-to-be scanned sources are not scanned, add a `-D` to the
 # scan flags so that the files can detect whether scanning happened and error
 # if not.
-string(APPEND CMAKE_EXPERIMENTAL_CXX_MODULE_MAP_FLAG
+string(APPEND CMAKE_CXX_MODULE_MAP_FLAG
   " -DCMAKE_SCANNED_THIS_SOURCE")
-string(APPEND CMAKE_EXPERIMENTAL_CXX_SCANDEP_SOURCE
-  " -DCMAKE_SCANNED_THIS_SOURCE")
+string(REPLACE "<DEFINES>" "<DEFINES> -DCMAKE_SCANNED_THIS_SOURCE"
+  CMAKE_CXX_SCANDEP_SOURCE "${CMAKE_CXX_SCANDEP_SOURCE}")
 
 set_property(SOURCE always_scan.cxx
   PROPERTY CXX_SCAN_FOR_MODULES 1)
-set_property(SOURCE never_scan.cxx
+set_property(SOURCE never_scan.ixx
   PROPERTY CXX_SCAN_FOR_MODULES 0)
+set_property(SOURCE never_scan.ixx
+  PROPERTY LANGUAGE CXX)
 
 add_executable(scans_everything)
 target_sources(scans_everything
@@ -27,7 +29,7 @@ target_sources(scans_everything
     main.cxx
     join.cxx
     always_scan.cxx
-    never_scan.cxx
+    never_scan.ixx
   PRIVATE
     FILE_SET CXX_MODULES
       BASE_DIRS
@@ -46,7 +48,7 @@ target_sources(no_scan_everything
     main.cxx
     join.cxx
     always_scan.cxx
-    never_scan.cxx
+    never_scan.ixx
   PRIVATE
     FILE_SET CXX_MODULES
       BASE_DIRS

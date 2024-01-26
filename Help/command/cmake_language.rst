@@ -15,6 +15,7 @@ Synopsis
   cmake_language(`DEFER`_ <options>... CALL <command> [<arg>...])
   cmake_language(`SET_DEPENDENCY_PROVIDER`_ <command> SUPPORTED_METHODS <methods>...)
   cmake_language(`GET_MESSAGE_LOG_LEVEL`_ <out-var>)
+  cmake_language(`EXIT`_ <exit-code>)
 
 Introduction
 ^^^^^^^^^^^^
@@ -195,7 +196,7 @@ prints::
   Immediate Message
   Deferred Message
 
-The ``Cancelled Message`` is never printed because its command is
+The ``Canceled Message`` is never printed because its command is
 canceled.  The ``deferred_message`` variable reference is not evaluated
 until the call site, so it can be set after the deferred call is scheduled.
 
@@ -317,7 +318,7 @@ be one of the ``<methods>`` that was specified when setting the provider.
   implementation as part of its processing, it can do so by including the
   ``BYPASS_PROVIDER`` keyword as one of the arguments.
 
-``FETCHCONTENT_MAKEAVAILABE_SERIAL``
+``FETCHCONTENT_MAKEAVAILABLE_SERIAL``
   The ``<method-specific-args>`` will be everything passed to the
   :command:`FetchContent_Declare` call that corresponds to the requested
   dependency, with the following exceptions:
@@ -506,3 +507,25 @@ Getting current message log level
   If both the command line option and the variable are set, the command line
   option takes precedence. If neither are set, the default logging level
   is returned.
+
+Terminating Scripts
+^^^^^^^^^^^^^^^^^^^
+
+.. versionadded:: 3.29
+
+.. _EXIT:
+.. _exit-code:
+
+.. code-block:: cmake
+
+.. signature::
+  cmake_language(EXIT <exit-code>)
+
+  Terminate the current :option:`cmake -P` script and exit with ``<exit-code>``.
+
+  This command works only in :ref:`script mode <Script Processing Mode>`.
+
+  The ``<exit-code>`` should be non-negative.
+  If ``<exit-code>`` is negative then the behavior
+  is unspecified (e.g., on Windows the error code -1
+  becomes ``0xffffffff``, and on Linux it becomes ``255``).

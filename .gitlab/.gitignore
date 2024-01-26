@@ -12,9 +12,12 @@
 /ninja*
 /openmp
 /open-watcom*
+/orangec
 /python*
 /qt*
 /sccache*
 /unstable-jom*
 /watcom
 /wix*
+/clang-tidy-fixes
+/num_warnings.txt

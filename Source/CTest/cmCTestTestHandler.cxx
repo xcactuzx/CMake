@@ -1381,15 +1381,15 @@ bool cmCTestTestHandler::ProcessDirectory(std::vector<std::string>& passed,
         }
       }
     }
-    tests[p.Index] = depends;
+    tests[p.Index].Depends = depends;
     properties[p.Index] = &p;
   }
   parallel->SetResourceSpecFile(this->ResourceSpecFile);
-  parallel->SetTests(tests, properties);
+  parallel->SetTests(std::move(tests), std::move(properties));
   parallel->SetPassFailVectors(&passed, &failed);
   this->TestResults.clear();
   parallel->SetTestResults(&this->TestResults);
-  parallel->CheckResourcesAvailable();
+  parallel->CheckResourceAvailability();
 
   if (this->CTest->ShouldPrintLabels()) {
     parallel->PrintLabels();
@@ -1711,8 +1711,7 @@ std::string cmCTestTestHandler::FindExecutable(
   // now look in the paths we specified above
   for (unsigned int ai = 0; ai < attempted.size() && fullPath.empty(); ++ai) {
     // first check without exe extension
-    if (cmSystemTools::FileExists(attempted[ai]) &&
-        !cmSystemTools::FileIsDirectory(attempted[ai])) {
+    if (cmSystemTools::FileExists(attempted[ai], true)) {
       fullPath = cmSystemTools::CollapseFullPath(attempted[ai]);
       resultingConfig = attemptedConfigs[ai];
     }
@@ -1721,8 +1720,7 @@ std::string cmCTestTestHandler::FindExecutable(
       failed.push_back(attempted[ai]);
       tempPath =
         cmStrCat(attempted[ai], cmSystemTools::GetExecutableExtension());
-      if (cmSystemTools::FileExists(tempPath) &&
-          !cmSystemTools::FileIsDirectory(tempPath)) {
+      if (cmSystemTools::FileExists(tempPath, true)) {
         fullPath = cmSystemTools::CollapseFullPath(tempPath);
         resultingConfig = attemptedConfigs[ai];
       } else {
@@ -2235,7 +2233,7 @@ bool cmCTestTestHandler::SetTestsProperties(
           } else if (key == "RESOURCE_LOCK"_s) {
             cmList lval{ val };
 
-            rt.LockedResources.insert(lval.begin(), lval.end());
+            rt.ProjectResources.insert(lval.begin(), lval.end());
           } else if (key == "FIXTURES_SETUP"_s) {
             cmList lval{ val };
 

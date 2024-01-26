@@ -145,10 +145,10 @@ Next, the new library target is linked to the executable target using
 
   </details>
 
-Finally we need to specify the library's header file location. Modify
-:command:`target_include_directories` to add the ``MathFunctions`` subdirectory
-as an include directory so that the ``MathFunctions.h`` header file can be
-found.
+Finally we need to specify the library's header file location.
+Modify the existing :command:`target_include_directories` call
+to add the ``MathFunctions`` subdirectory as an include directory
+so that the ``MathFunctions.h`` header file can be found.
 
 .. raw:: html
 
@@ -184,7 +184,7 @@ Now let's use our library. In ``tutorial.cxx``, include ``MathFunctions.h``:
 
   </details>
 
-Lastly, replace ``sqrt`` with our library function ``mathfunctions::mysqrt``.
+Lastly, replace ``sqrt`` with the wrapper function ``mathfunctions::sqrt``.
 
 .. raw:: html
 

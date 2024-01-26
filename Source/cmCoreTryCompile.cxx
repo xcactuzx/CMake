@@ -14,6 +14,7 @@
 
 #include "cmsys/Directory.hxx"
 #include "cmsys/FStream.hxx"
+#include "cmsys/RegularExpression.hxx"
 
 #include "cmArgumentParser.h"
 #include "cmConfigureLog.h"
@@ -72,15 +73,18 @@ SETUP_LANGUAGE(swift_properties, Swift);
 
 std::string const kCMAKE_CUDA_ARCHITECTURES = "CMAKE_CUDA_ARCHITECTURES";
 std::string const kCMAKE_CUDA_RUNTIME_LIBRARY = "CMAKE_CUDA_RUNTIME_LIBRARY";
+std::string const kCMAKE_CXX_SCAN_FOR_MODULES = "CMAKE_CXX_SCAN_FOR_MODULES";
 std::string const kCMAKE_ENABLE_EXPORTS = "CMAKE_ENABLE_EXPORTS";
 std::string const kCMAKE_EXECUTABLE_ENABLE_EXPORTS =
   "CMAKE_EXECUTABLE_ENABLE_EXPORTS";
 std::string const kCMAKE_SHARED_LIBRARY_ENABLE_EXPORTS =
   "CMAKE_SHARED_LIBRARY_ENABLE_EXPORTS";
 std::string const kCMAKE_HIP_ARCHITECTURES = "CMAKE_HIP_ARCHITECTURES";
+std::string const kCMAKE_HIP_PLATFORM = "CMAKE_HIP_PLATFORM";
 std::string const kCMAKE_HIP_RUNTIME_LIBRARY = "CMAKE_HIP_RUNTIME_LIBRARY";
 std::string const kCMAKE_ISPC_INSTRUCTION_SETS = "CMAKE_ISPC_INSTRUCTION_SETS";
 std::string const kCMAKE_ISPC_HEADER_SUFFIX = "CMAKE_ISPC_HEADER_SUFFIX";
+std::string const kCMAKE_LINKER_TYPE = "CMAKE_LINKER_TYPE";
 std::string const kCMAKE_LINK_SEARCH_END_STATIC =
   "CMAKE_LINK_SEARCH_END_STATIC";
 std::string const kCMAKE_LINK_SEARCH_START_STATIC =
@@ -174,6 +178,7 @@ auto const TryCompileBaseSourcesArgParser =
           ArgumentParser::ExpectAtLeast{ 0 })
     .Bind("LINK_LIBRARIES"_s, &Arguments::LinkLibraries)
     .Bind("LINK_OPTIONS"_s, &Arguments::LinkOptions)
+    .Bind("LINKER_LANGUAGE"_s, &Arguments::LinkerLanguage)
     .Bind("COPY_FILE"_s, &Arguments::CopyFileTo)
     .Bind("COPY_FILE_ERROR"_s, &Arguments::CopyFileError)
     .BIND_LANG_PROPS(C)
@@ -234,25 +239,16 @@ ArgumentParser::Continue cmCoreTryCompile::Arguments::SetSourceType(
     this->SourceTypeContext = SourceType::Normal;
     matched = true;
   } else if (sourceType == "CXX_MODULE"_s) {
-    bool const supportCxxModuleSources = cmExperimental::HasSupportEnabled(
-      *this->Makefile, cmExperimental::Feature::CxxModuleCMakeApi);
-    if (supportCxxModuleSources) {
-      this->SourceTypeContext = SourceType::CxxModule;
-      matched = true;
-    }
+    this->SourceTypeContext = SourceType::CxxModule;
+    matched = true;
   }
 
   if (!matched && this->SourceTypeError.empty()) {
-    bool const supportCxxModuleSources = cmExperimental::HasSupportEnabled(
-      *this->Makefile, cmExperimental::Feature::CxxModuleCMakeApi);
-    auto const* message = "'SOURCE'";
-    if (supportCxxModuleSources) {
-      message = "one of 'SOURCE' or 'CXX_MODULE'";
-    }
     // Only remember one error at a time; all other errors related to argument
     // parsing are "indicate one error and return" anyways.
     this->SourceTypeError =
-      cmStrCat("Invalid 'SOURCE_TYPE' '", sourceType, "'; must be ", message);
+      cmStrCat("Invalid 'SOURCE_TYPE' '", sourceType,
+               "'; must be one of 'SOURCE' or 'CXX_MODULE'");
   }
   return ArgumentParser::Continue::Yes;
 }
@@ -633,13 +629,11 @@ cm::optional<cmTryCompileResult> cmCoreTryCompile::TryCompileCode(
     // now create a CMakeLists.txt file in that directory
     FILE* fout = cmsys::SystemTools::Fopen(outFileName, "w");
     if (!fout) {
-      std::ostringstream e;
-      /* clang-format off */
-      e << "Failed to open\n"
-           "  " << outFileName << "\n"
-        << cmSystemTools::GetLastSystemError();
-      /* clang-format on */
-      this->Makefile->IssueMessage(MessageType::FATAL_ERROR, e.str());
+      this->Makefile->IssueMessage(
+        MessageType::FATAL_ERROR,
+        cmStrCat("Failed to open\n"
+                 "  ",
+                 outFileName, '\n', cmSystemTools::GetLastSystemError()));
       return cm::nullopt;
     }
 
@@ -731,10 +725,16 @@ cm::optional<cmTryCompileResult> cmCoreTryCompile::TryCompileCode(
       // The link and compile lines for ABI detection step need to not use
       // response files so we can extract implicit includes given to
       // the underlying host compiler
-      if (testLangs.find("CUDA") != testLangs.end()) {
-        fprintf(fout, "set(CMAKE_CUDA_USE_RESPONSE_FILE_FOR_INCLUDES OFF)\n");
-        fprintf(fout, "set(CMAKE_CUDA_USE_RESPONSE_FILE_FOR_LIBRARIES OFF)\n");
-        fprintf(fout, "set(CMAKE_CUDA_USE_RESPONSE_FILE_FOR_OBJECTS OFF)\n");
+      static std::array<std::string, 2> const noRSP{ { "CUDA", "HIP" } };
+      for (std::string const& lang : noRSP) {
+        if (testLangs.find(lang) != testLangs.end()) {
+          fprintf(fout, "set(CMAKE_%s_USE_RESPONSE_FILE_FOR_INCLUDES OFF)\n",
+                  lang.c_str());
+          fprintf(fout, "set(CMAKE_%s_USE_RESPONSE_FILE_FOR_LIBRARIES OFF)\n",
+                  lang.c_str());
+          fprintf(fout, "set(CMAKE_%s_USE_RESPONSE_FILE_FOR_OBJECTS OFF)\n",
+                  lang.c_str());
+        }
       }
     }
     fprintf(fout, "set(CMAKE_VERBOSE_MAKEFILE 1)\n");
@@ -855,8 +855,30 @@ cm::optional<cmTryCompileResult> cmCoreTryCompile::TryCompileCode(
         fclose(fout);
         return cm::nullopt;
       }
-      fprintf(fout, "\ninclude(\"${CMAKE_CURRENT_LIST_DIR}/%s\")\n\n",
+      fprintf(fout, "\ninclude(\"${CMAKE_CURRENT_LIST_DIR}/%s\")\n",
               fname.c_str());
+      // Create all relevant alias targets
+      if (arguments.LinkLibraries) {
+        const auto& aliasTargets = this->Makefile->GetAliasTargets();
+        for (std::string const& i : *arguments.LinkLibraries) {
+          auto alias = aliasTargets.find(i);
+          if (alias != aliasTargets.end()) {
+            const auto& aliasTarget =
+              this->Makefile->FindTargetToUse(alias->second);
+            // Create equivalent library/executable alias
+            if (aliasTarget->GetType() == cmStateEnums::EXECUTABLE) {
+              fprintf(fout, "add_executable(\"%s\" ALIAS \"%s\")\n", i.c_str(),
+                      alias->second.c_str());
+            } else {
+              // Other cases like UTILITY and GLOBAL_TARGET are excluded when
+              // arguments.LinkLibraries is initially parsed in this function.
+              fprintf(fout, "add_library(\"%s\" ALIAS \"%s\")\n", i.c_str(),
+                      alias->second.c_str());
+            }
+          }
+        }
+      }
+      fprintf(fout, "\n");
     }
 
     /* Set the appropriate policy information for ENABLE_EXPORTS */
@@ -872,6 +894,21 @@ cm::optional<cmTryCompileResult> cmCoreTryCompile::TryCompileCode(
                 cmPolicies::NEW
               ? "NEW"
               : "OLD");
+
+    /* Set the appropriate policy information for C++ module support */
+    fprintf(fout, "cmake_policy(SET CMP0155 %s)\n",
+            this->Makefile->GetPolicyStatus(cmPolicies::CMP0155) ==
+                cmPolicies::NEW
+              ? "NEW"
+              : "OLD");
+
+    /* Set the appropriate policy information for Swift compilation mode */
+    fprintf(
+      fout, "cmake_policy(SET CMP0157 %s)\n",
+      this->Makefile->GetDefinition("CMAKE_Swift_COMPILATION_MODE_DEFAULT")
+          .IsEmpty()
+        ? "OLD"
+        : "NEW");
 
     // Workaround for -Wl,-headerpad_max_install_names issue until we can avoid
     // adding that flag in the platform and compiler language files
@@ -1037,6 +1074,19 @@ cm::optional<cmTryCompileResult> cmCoreTryCompile::TryCompileCode(
       }
     }
 
+    if (arguments.LinkerLanguage) {
+      std::string LinkerLanguage = *arguments.LinkerLanguage;
+      if (testLangs.find(LinkerLanguage) == testLangs.end()) {
+        this->Makefile->IssueMessage(
+          MessageType::FATAL_ERROR,
+          "Linker language '" + LinkerLanguage +
+            "' must be enabled in project(LANGUAGES).");
+      }
+
+      fprintf(fout, "set_property(TARGET %s PROPERTY LINKER_LANGUAGE %s)\n",
+              targetName.c_str(), LinkerLanguage.c_str());
+    }
+
     if (arguments.LinkLibraries) {
       std::string libsToLink = " ";
       for (std::string const& i : *arguments.LinkLibraries) {
@@ -1077,10 +1127,12 @@ cm::optional<cmTryCompileResult> cmCoreTryCompile::TryCompileCode(
                 &swift_properties[lang_property_start + lang_property_size]);
     vars.insert(kCMAKE_CUDA_ARCHITECTURES);
     vars.insert(kCMAKE_CUDA_RUNTIME_LIBRARY);
+    vars.insert(kCMAKE_CXX_SCAN_FOR_MODULES);
     vars.insert(kCMAKE_ENABLE_EXPORTS);
     vars.insert(kCMAKE_EXECUTABLE_ENABLE_EXPORTS);
     vars.insert(kCMAKE_SHARED_LIBRARY_ENABLE_EXPORTS);
     vars.insert(kCMAKE_HIP_ARCHITECTURES);
+    vars.insert(kCMAKE_HIP_PLATFORM);
     vars.insert(kCMAKE_HIP_RUNTIME_LIBRARY);
     vars.insert(kCMAKE_ISPC_INSTRUCTION_SETS);
     vars.insert(kCMAKE_ISPC_HEADER_SUFFIX);
@@ -1104,6 +1156,20 @@ cm::optional<cmTryCompileResult> cmCoreTryCompile::TryCompileCode(
           kCMAKE_TRY_COMPILE_PLATFORM_VARIABLES)) {
       cmList varList{ *varListStr };
       vars.insert(varList.begin(), varList.end());
+    }
+
+    if (this->Makefile->GetDefinition(kCMAKE_LINKER_TYPE)) {
+      // propagate various variables to support linker selection
+      vars.insert(kCMAKE_LINKER_TYPE);
+      auto defs = this->Makefile->GetDefinitions();
+      cmsys::RegularExpression linkerTypeDef{
+        "^CMAKE_[A-Za-z]+_USING_LINKER_"
+      };
+      for (auto const& def : defs) {
+        if (linkerTypeDef.find(def)) {
+          vars.insert(def);
+        }
+      }
     }
 
     if (this->Makefile->GetPolicyStatus(cmPolicies::CMP0083) ==

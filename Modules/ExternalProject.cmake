@@ -522,7 +522,7 @@ overridden if required.
   use the same generator as the main project, but the ``CMAKE_GENERATOR``
   option can be given to override this.  The project is responsible for
   adding any toolchain details, flags or other settings it wants to
-  re-use from the main project or otherwise specify (see ``CMAKE_ARGS``,
+  reuse from the main project or otherwise specify (see ``CMAKE_ARGS``,
   ``CMAKE_CACHE_ARGS`` and ``CMAKE_CACHE_DEFAULT_ARGS`` below).
 
   For non-CMake external projects, the ``CONFIGURE_COMMAND`` option must
@@ -593,7 +593,7 @@ overridden if required.
   as initial defaults only and will not override any variables already set
   from a previous run. Use this option with care, as it can lead to
   different behavior depending on whether the build starts from a fresh
-  build directory or re-uses previous build contents.
+  build directory or reuses previous build contents.
 
   .. versionadded:: 3.15
     If the CMake generator is the ``Green Hills MULTI`` and not overridden,
@@ -1934,8 +1934,10 @@ function(_ep_get_build_command
   set(args)
   _ep_get_configure_command_id(${name} cfg_cmd_id)
   if(cfg_cmd_id STREQUAL "cmake")
-    # CMake project.  Select build command based on generator.
-    get_target_property(cmake_generator ${name} _EP_CMAKE_GENERATOR)
+    # Adding a CMake project as an External Project.  Select command based on generator
+    get_property(cmake_generator TARGET ${name} PROPERTY _EP_CMAKE_GENERATOR)
+    # cmake_generator is the CMake generator of the ExternalProject target being added
+    # CMAKE_GENERATOR is the CMake generator of the Current Project
     if("${CMAKE_GENERATOR}" MATCHES "Make" AND
        ("${cmake_generator}" MATCHES "Make" OR NOT cmake_generator))
       # The project uses the same Makefile generator.  Use recursive make.
@@ -1948,6 +1950,11 @@ function(_ep_get_build_command
       endif()
     else()
       # Drive the project with "cmake --build".
+      if(NOT cmake_generator)
+        # If there is no CMake Generator defined on the ExternalProject,
+        # use the same Generator as the current project
+        set(cmake_generator "${CMAKE_GENERATOR}")
+      endif()
       get_target_property(cmake_command ${name} _EP_CMAKE_COMMAND)
       if(cmake_command)
         set(cmd "${cmake_command}")
@@ -1977,7 +1984,11 @@ function(_ep_get_build_command
         list(APPEND args --config ${config})
       endif()
       if(step STREQUAL "INSTALL")
-        list(APPEND args --target install)
+        if("${cmake_generator}" MATCHES "Green Hills MULTI")
+          list(APPEND args --target INSTALL)
+        else()
+          list(APPEND args --target install)
+        endif()
       endif()
       # But for "TEST" drive the project with corresponding "ctest".
       if("x${step}x" STREQUAL "xTESTx")
@@ -3763,6 +3774,9 @@ function(_ep_extract_configure_command var name)
         list(APPEND cmd "-G${CMAKE_EXTRA_GENERATOR} - ${CMAKE_GENERATOR}")
       else()
         list(APPEND cmd "-G${CMAKE_GENERATOR}")
+        # GreenHills needs to know about the compiler and toolset.
+        # Be sure to update the similar section in
+        # FetchContent.cmake:__FetchContent_directPopulate()
         if("${CMAKE_GENERATOR}" MATCHES "Green Hills MULTI")
           set(has_cmake_cache_default_args 1)
           list(APPEND cmake_cache_default_args

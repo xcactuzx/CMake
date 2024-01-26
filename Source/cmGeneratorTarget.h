@@ -21,6 +21,7 @@
 #include "cmLinkItem.h"
 #include "cmListFileCache.h"
 #include "cmPolicies.h"
+#include "cmStandardLevel.h"
 #include "cmStateTypes.h"
 #include "cmValue.h"
 
@@ -57,6 +58,7 @@ public:
   bool IsImported() const;
   bool IsImportedGloballyVisible() const;
   bool CanCompileSources() const;
+  bool HasKnownRuntimeArtifactLocation(std::string const& config) const;
   const std::string& GetLocation(const std::string& config) const;
 
   /** Get the full path to the target's main artifact, if known.  */
@@ -203,6 +205,9 @@ public:
 
   cmValue GetFeature(const std::string& feature,
                      const std::string& config) const;
+
+  std::string GetLinkerTypeProperty(std::string const& lang,
+                                    std::string const& config) const;
 
   const char* GetLinkPIEProperty(const std::string& config) const;
 
@@ -445,9 +450,12 @@ public:
   TargetOrString ResolveTargetReference(std::string const& name,
                                         cmLocalGenerator const* lg) const;
 
-  cmLinkItem ResolveLinkItem(BT<std::string> const& name) const;
-  cmLinkItem ResolveLinkItem(BT<std::string> const& name,
-                             cmLocalGenerator const* lg) const;
+  cmLinkItem ResolveLinkItem(
+    BT<std::string> const& name,
+    std::string const& linkFeature = cmLinkItem::DEFAULT) const;
+  cmLinkItem ResolveLinkItem(
+    BT<std::string> const& name, cmLocalGenerator const* lg,
+    std::string const& linkFeature = cmLinkItem::DEFAULT) const;
 
   bool HasPackageReferences() const;
   std::vector<std::string> GetPackageReferences() const;
@@ -461,6 +469,11 @@ public:
                     std::string const& config) const;
   bool IsLanguageUsed(std::string const& language,
                       std::string const& config) const;
+
+  // Get the set of targets directly referenced via `TARGET_OBJECTS` in the
+  // source list for a configuration.
+  std::set<cmGeneratorTarget const*> GetSourceObjectLibraries(
+    std::string const& config) const;
 
   bool IsCSharpOnly() const;
 
@@ -496,11 +509,17 @@ public:
                                 cmSourceFile const& sf) const;
 
   void AddCUDAArchitectureFlags(cmBuildStep compileOrLink,
-                                const std::string& config,
+                                std::string const& config,
                                 std::string& flags) const;
+  void AddCUDAArchitectureFlagsImpl(cmBuildStep compileOrLink,
+                                    std::string const& config,
+                                    std::string const& lang, std::string arch,
+                                    std::string& flags) const;
   void AddCUDAToolkitFlags(std::string& flags) const;
 
-  void AddHIPArchitectureFlags(std::string& flags) const;
+  void AddHIPArchitectureFlags(cmBuildStep compileOrLink,
+                               std::string const& config,
+                               std::string& flags) const;
 
   void AddISPCTargetFlags(std::string& flags) const;
 
@@ -607,12 +626,11 @@ public:
   /** Add the target output files to the global generator manifest.  */
   void ComputeTargetManifest(const std::string& config) const;
 
-  bool ComputeCompileFeatures(std::string const& config) const;
+  bool ComputeCompileFeatures(std::string const& config);
 
   using LanguagePair = std::pair<std::string, std::string>;
-  bool ComputeCompileFeatures(
-    std::string const& config,
-    std::set<LanguagePair> const& languagePairs) const;
+  bool ComputeCompileFeatures(std::string const& config,
+                              std::set<LanguagePair> const& languagePairs);
 
   /**
    * Trace through the source files in this target and add al source files
@@ -782,6 +800,13 @@ public:
 
   //! Return the preferred linker language for this target
   std::string GetLinkerLanguage(const std::string& config) const;
+  //! Return the preferred linker tool for this target
+  std::string GetLinkerTool(const std::string& config) const;
+  std::string GetLinkerTool(const std::string& lang,
+                            const std::string& config) const;
+
+  /** Is the linker known to enforce '--no-allow-shlib-undefined'? */
+  bool LinkerEnforcesNoAllowShLibUndefined(std::string const& config) const;
 
   /** Does this target have a GNU implib to convert to MS format?  */
   bool HasImplibGNUtoMS(std::string const& config) const;
@@ -1086,7 +1111,6 @@ private:
     std::string SharedDeps;
   };
 
-  friend cmComputeLinkInformation;
   using ImportInfoMapType = std::map<std::string, ImportInfo>;
   mutable ImportInfoMapType ImportInfoMap;
   void ComputeImportInfo(std::string const& desired_config,
@@ -1164,6 +1188,7 @@ private:
   };
   cm::optional<cmLinkItem> LookupLinkItem(std::string const& n,
                                           cmListFileBacktrace const& bt,
+                                          std::string const& linkFeature,
                                           LookupLinkItemScope* scope,
                                           LookupSelf lookupSelf) const;
 
@@ -1235,7 +1260,14 @@ private:
   bool GetRPATH(const std::string& config, const std::string& prop,
                 std::string& rpath) const;
 
-  mutable std::map<std::string, BTs<std::string>> LanguageStandardMap;
+  std::map<std::string, BTs<std::string>> LanguageStandardMap;
+
+  cm::optional<cmStandardLevel> GetExplicitStandardLevel(
+    std::string const& lang, std::string const& config) const;
+  void UpdateExplicitStandardLevel(std::string const& lang,
+                                   std::string const& config,
+                                   cmStandardLevel level);
+  std::map<std::string, cmStandardLevel> ExplicitStandardLevel;
 
   cmValue GetPropertyWithPairedLanguageSupport(std::string const& lang,
                                                const char* suffix) const;
@@ -1262,6 +1294,7 @@ public:
                     cmGeneratorTarget const* t2) const;
   };
 
+  bool HaveFortranSources() const;
   bool HaveFortranSources(std::string const& config) const;
 
   // C++20 module support queries.
@@ -1281,10 +1314,10 @@ public:
   {
     // C++ is not available.
     MissingCxx,
-    // The experimental feature is not available.
-    MissingExperimentalFlag,
     // The target does not require at least C++20.
     NoCxx20,
+    // C++20 module scanning rules are not present.
+    MissingRule,
     // C++20 modules are available and working.
     Supported,
   };

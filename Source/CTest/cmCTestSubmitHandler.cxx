@@ -138,6 +138,19 @@ void cmCTestSubmitHandler::Initialize()
   this->Files.clear();
 }
 
+int cmCTestSubmitHandler::ProcessCommandLineArguments(
+  const std::string& currentArg, size_t& idx,
+  const std::vector<std::string>& allArgs)
+{
+  if (cmHasLiteralPrefix(currentArg, "--http-header") &&
+      idx < allArgs.size() - 1) {
+    ++idx;
+    this->HttpHeaders.push_back(allArgs[idx]);
+    this->CommandLineHttpHeaders.push_back(allArgs[idx]);
+  }
+  return 1;
+}
+
 bool cmCTestSubmitHandler::SubmitUsingHTTP(
   const std::string& localprefix, const std::vector<std::string>& files,
   const std::string& remoteprefix, const std::string& url)
@@ -308,6 +321,9 @@ bool cmCTestSubmitHandler::SubmitUsingHTTP(
 
       // specify target
       ::curl_easy_setopt(curl, CURLOPT_URL, upload_as.c_str());
+
+      // follow redirects
+      ::curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1);
 
       // CURLAUTH_BASIC is default, and here we allow additional methods,
       // including more secure ones

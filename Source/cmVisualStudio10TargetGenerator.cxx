@@ -358,17 +358,17 @@ std::ostream& cmVisualStudio10TargetGenerator::Elem::WriteString(
 
 void cmVisualStudio10TargetGenerator::Generate()
 {
-  for (std::string const& config : this->Configurations) {
-    this->GeneratorTarget->CheckCxxModuleStatus(config);
+  if (this->GeneratorTarget->IsSynthetic()) {
+    this->GeneratorTarget->Makefile->IssueMessage(
+      MessageType::FATAL_ERROR,
+      cmStrCat("Target \"", this->GeneratorTarget->GetName(),
+               "\" contains C++ modules intended for BMI-only compilation. "
+               "This is not yet supported by the Visual Studio generator."));
+    return;
   }
 
-  if (this->GeneratorTarget->HaveCxx20ModuleSources() &&
-      !this->GlobalGenerator->SupportsCxxModuleDyndep()) {
-    this->Makefile->IssueMessage(
-      MessageType::FATAL_ERROR,
-      cmStrCat("The target named \"", this->GeneratorTarget->GetName(),
-               "\" contains C++ sources that export modules which is not "
-               "supported by the generator"));
+  for (std::string const& config : this->Configurations) {
+    this->GeneratorTarget->CheckCxxModuleStatus(config);
   }
 
   this->ProjectType = computeProjectType(this->GeneratorTarget);
@@ -2551,6 +2551,12 @@ void cmVisualStudio10TargetGenerator::WriteAllSources(Elem& e0)
         break;
     }
 
+    std::string config;
+    if (!this->Configurations.empty()) {
+      config = this->Configurations[si.Configs[0]];
+    }
+    auto const* fs =
+      this->GeneratorTarget->GetFileSetForSource(config, si.Source);
     if (tool) {
       // Compute set of configurations to exclude, if any.
       std::vector<size_t> const& include_configs = si.Configs;
@@ -2616,6 +2622,13 @@ void cmVisualStudio10TargetGenerator::WriteAllSources(Elem& e0)
       if (si.Kind == cmGeneratorTarget::SourceKindObjectSource ||
           si.Kind == cmGeneratorTarget::SourceKindUnityBatched) {
         this->OutputSourceSpecificFlags(e2, si.Source);
+      } else if (fs && fs->GetType() == "CXX_MODULES"_s) {
+        this->GeneratorTarget->Makefile->IssueMessage(
+          MessageType::FATAL_ERROR,
+          cmStrCat("Target \"", this->GeneratorTarget->GetName(),
+                   "\" has source file\n  ", si.Source->GetFullPath(),
+                   "\nin a \"FILE_SET TYPE CXX_MODULES\" but it is not "
+                   "scheduled for compilation."));
       }
       if (si.Source->GetPropertyAsBool("SKIP_PRECOMPILE_HEADERS")) {
         e2.Element("PrecompiledHeader", "NotUsing");
@@ -2625,6 +2638,13 @@ void cmVisualStudio10TargetGenerator::WriteAllSources(Elem& e0)
       }
 
       this->FinishWritingSource(e2, toolSettings);
+    } else if (fs && fs->GetType() == "CXX_MODULES"_s) {
+      this->GeneratorTarget->Makefile->IssueMessage(
+        MessageType::FATAL_ERROR,
+        cmStrCat("Target \"", this->GeneratorTarget->GetName(),
+                 "\" has source file\n  ", si.Source->GetFullPath(),
+                 "\nin a \"FILE_SET TYPE CXX_MODULES\" but it is not "
+                 "scheduled for compilation."));
     }
   }
 
@@ -2764,7 +2784,7 @@ void cmVisualStudio10TargetGenerator::OutputSourceSpecificFlags(
           isCppModule = true;
           if (shouldScanForModules &&
               this->GlobalGenerator->IsScanDependenciesSupported()) {
-            // ScanSourceforModuleDependencies uses 'cl /scanDependencies' and
+            // ScanSourceForModuleDependencies uses 'cl /scanDependencies' and
             // can distinguish module interface units and internal partitions.
             compileAsPerConfig = "CompileAsCpp";
           } else {
@@ -2807,7 +2827,7 @@ void cmVisualStudio10TargetGenerator::OutputSourceSpecificFlags(
     // use them
     if (!flags.empty() || !options.empty() || !configDefines.empty() ||
         !includes.empty() || compileAsPerConfig || noWinRT ||
-        !options.empty() || needsPCHFlags) {
+        !options.empty() || needsPCHFlags || shouldScanForModules) {
       cmGlobalVisualStudio10Generator* gg = this->GlobalGenerator;
       cmIDEFlagTable const* flagtable = nullptr;
       const std::string& srclang = source->GetLanguage();
@@ -2836,9 +2856,7 @@ void cmVisualStudio10TargetGenerator::OutputSourceSpecificFlags(
         clOptions.AddFlag("CompileAs", compileAsPerConfig);
       }
       if (shouldScanForModules) {
-        clOptions.AddFlag("ScanSourceforModuleDependencies", "true");
-      } else {
-        clOptions.AddFlag("ScanSourceforModuleDependencies", "false");
+        clOptions.AddFlag("ScanSourceForModuleDependencies", "true");
       }
       if (noWinRT) {
         clOptions.AddFlag("CompileAsWinRT", "false");
@@ -2976,6 +2994,16 @@ void cmVisualStudio10TargetGenerator::WritePathAndIncrementalLinkOptions(
       e1.WritePlatformConfigTag(
         "IntDir", cond, R"($(Platform)\$(Configuration)\$(ProjectName)\)");
     } else {
+      if (ttype == cmStateEnums::SHARED_LIBRARY ||
+          ttype == cmStateEnums::MODULE_LIBRARY ||
+          ttype == cmStateEnums::EXECUTABLE) {
+        auto linker = this->GeneratorTarget->GetLinkerTool(config);
+        if (!linker.empty()) {
+          ConvertToWindowsSlash(linker);
+          e1.WritePlatformConfigTag("LinkToolExe", cond, linker);
+        }
+      }
+
       std::string intermediateDir = cmStrCat(
         this->LocalGenerator->GetTargetDirectory(this->GeneratorTarget), '/',
         config, '/');
@@ -3544,6 +3572,9 @@ void cmVisualStudio10TargetGenerator::WriteClOptions(
       e2.Element("AdditionalUsingDirectories", dirs);
     }
   }
+
+  // Disable C++ source scanning by default.
+  e2.Element("ScanSourceForModuleDependencies", "false");
 }
 
 bool cmVisualStudio10TargetGenerator::ComputeRcOptions()
@@ -3844,22 +3875,41 @@ bool cmVisualStudio10TargetGenerator::ComputeCudaLinkOptions(
   }
   cudaLinkOptions.AppendFlagString("AdditionalOptions", linkFlags);
 
-  // For static libraries that have device linking enabled compute
-  // the  libraries
-  if (this->GeneratorTarget->GetType() == cmStateEnums::STATIC_LIBRARY &&
-      doDeviceLinking) {
-    cmComputeLinkInformation& cli = *pcli;
-    cmLinkLineDeviceComputer computer(
-      this->LocalGenerator,
-      this->LocalGenerator->GetStateSnapshot().GetDirectory());
-    std::vector<BT<std::string>> btLibVec;
-    computer.ComputeLinkLibraries(cli, std::string{}, btLibVec);
+  if (doDeviceLinking) {
     std::vector<std::string> libVec;
-    for (auto const& item : btLibVec) {
-      libVec.emplace_back(item.Value);
+    auto const& kinded = this->GeneratorTarget->GetKindedSources(configName);
+    // CMake conversion uses full paths when possible to allow deeper trees.
+    // However, CUDA 8.0 msbuild rules fail on absolute paths so for CUDA
+    // we must use relative paths.
+    const bool forceRelative = true;
+    for (cmGeneratorTarget::SourceAndKind const& si : kinded.Sources) {
+      switch (si.Kind) {
+        case cmGeneratorTarget::SourceKindExternalObject: {
+          std::string path =
+            this->ConvertPath(si.Source.Value->GetFullPath(), forceRelative);
+          ConvertToWindowsSlash(path);
+          libVec.emplace_back(std::move(path));
+        } break;
+        default:
+          break;
+      }
     }
-
-    cudaLinkOptions.AddFlag("AdditionalDependencies", libVec);
+    // For static libraries that have device linking enabled compute
+    // the  libraries
+    if (this->GeneratorTarget->GetType() == cmStateEnums::STATIC_LIBRARY) {
+      cmComputeLinkInformation& cli = *pcli;
+      cmLinkLineDeviceComputer computer(
+        this->LocalGenerator,
+        this->LocalGenerator->GetStateSnapshot().GetDirectory());
+      std::vector<BT<std::string>> btLibVec;
+      computer.ComputeLinkLibraries(cli, std::string{}, btLibVec);
+      for (auto const& item : btLibVec) {
+        libVec.emplace_back(item.Value);
+      }
+    }
+    if (!libVec.empty()) {
+      cudaLinkOptions.AddFlag("AdditionalDependencies", libVec);
+    }
   }
 
   this->CudaLinkOptions[configName] = std::move(pOptions);
@@ -3869,7 +3919,10 @@ bool cmVisualStudio10TargetGenerator::ComputeCudaLinkOptions(
 void cmVisualStudio10TargetGenerator::WriteCudaLinkOptions(
   Elem& e1, std::string const& configName)
 {
-  if (this->GeneratorTarget->GetType() > cmStateEnums::MODULE_LIBRARY) {
+  // We need to write link options for OBJECT libraries so that
+  // we override the default device link behavior ( enabled ) when
+  // building object libraries with ptx/optix-ir/etc
+  if (this->GeneratorTarget->GetType() > cmStateEnums::OBJECT_LIBRARY) {
     return;
   }
 

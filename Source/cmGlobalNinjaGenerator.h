@@ -282,6 +282,10 @@ public:
   };
   MapToNinjaPathImpl MapToNinjaPath() { return { this }; }
 
+#ifdef _WIN32
+  std::string const& GetComspec() const { return this->Comspec; }
+#endif
+
   // -- Additional clean files
   void AddAdditionalCleanFile(std::string fileName, const std::string& config);
   const char* GetAdditionalCleanTargetName() const
@@ -343,6 +347,9 @@ public:
   }
 
   virtual std::string OrderDependsTargetForTarget(
+    cmGeneratorTarget const* target, const std::string& config) const;
+
+  std::string OrderDependsTargetForTargetPrivate(
     cmGeneratorTarget const* target, const std::string& config) const;
 
   void AppendTargetOutputs(cmGeneratorTarget const* target,
@@ -408,10 +415,12 @@ public:
     return "1.10.2";
   }
   static std::string RequiredNinjaVersionForCodePage() { return "1.11"; }
+  static std::string RequiredNinjaVersionForCWDDepend() { return "1.7"; }
   bool SupportsDirectConsole() const override;
   bool SupportsImplicitOuts() const;
   bool SupportsManifestRestat() const;
   bool SupportsMultilineDepfile() const;
+  bool SupportsCWDDepend() const;
 
   std::string NinjaOutputPath(std::string const& path) const;
   bool HasOutputPathPrefix() const { return !this->OutputPathPrefix.empty(); }
@@ -423,6 +432,7 @@ public:
     std::string const& arg_dd, std::vector<std::string> const& arg_ddis,
     std::string const& module_dir,
     std::vector<std::string> const& linked_target_dirs,
+    std::vector<std::string> const& forward_modules_from_target_dirs,
     std::string const& arg_lang, std::string const& arg_modmapfmt,
     cmCxxModuleExportInfo const& export_info);
 
@@ -468,7 +478,7 @@ public:
 
   bool IsSingleConfigUtility(cmGeneratorTarget const* target) const;
 
-  bool CheckCxxModuleSupport() override;
+  bool CheckCxxModuleSupport(CxxModuleSupportQuery query) override;
 
 protected:
   void Generate() override;
@@ -589,8 +599,14 @@ private:
   bool NinjaSupportsMultipleOutputs = false;
   bool NinjaSupportsMetadataOnRegeneration = false;
   bool NinjaSupportsCodePage = false;
+  bool NinjaSupportsCWDDepend = false;
 
   codecvt_Encoding NinjaExpectedEncoding = codecvt_Encoding::None;
+
+#ifdef _WIN32
+  // Windows Command shell.
+  std::string Comspec;
+#endif
 
   bool DiagnosedCxxModuleNinjaSupport = false;
 
